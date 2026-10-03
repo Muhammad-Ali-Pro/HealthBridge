@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+data/*.db
+data/uploads/
+.streamlit/secrets.toml
+
+# Product requirements document — kept out of the repository
+HealthBridge_AI_PRD_v2_Research_Backed.docx
+*.docx
