@@ -8,6 +8,8 @@ Rules
 * Finalized consultations are immutable clinical records; additions are made with clinical notes.
 """
 
+from datetime import datetime, timedelta
+
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,7 +18,10 @@ from core.models import AuditAction, ClinicalNote, Consultation, ConsultationSta
 from core.schemas import Actor, ClinicalNoteOut, ConsultationOut
 from services import access_service, activity_service, record_service
 
-FIELDS = ("complaint", "notes", "observations", "assessment", "diagnosis", "treatment_plan", "follow_up")
+FIELDS = ("complaint", "notes", "observations", "assessment", "diagnosis", "treatment_plan", "follow_up",
+          "additional_notes")
+MAX_BACKDATE = timedelta(days=30)        # a consultation may be recorded after the visit, within reason
+FUTURE_TOLERANCE = timedelta(minutes=5)
 
 
 class ClinicalValidationError(ValueError):
@@ -33,9 +38,21 @@ class ConsultationInput(BaseModel):
     diagnosis: str = ""
     treatment_plan: str = ""
     follow_up: str = ""
+    additional_notes: str = ""   # patient-visible; for clinician-only text use an internal clinical note
 
     def cleaned(self) -> "ConsultationInput":
         return ConsultationInput(**{f: (getattr(self, f) or "").strip() for f in FIELDS})
+
+
+def validate_visit_time(occurred_at: datetime | None) -> dict[str, str]:
+    if occurred_at is None:
+        return {}
+    now = utcnow()
+    if occurred_at > now + FUTURE_TOLERANCE:
+        return {"occurred_at": "The consultation date/time cannot be in the future."}
+    if occurred_at < now - MAX_BACKDATE:
+        return {"occurred_at": "Consultations can be recorded up to 30 days after the visit."}
+    return {}
 
 
 def validate_for_finalize(data: ConsultationInput) -> dict[str, str]:
@@ -64,14 +81,20 @@ def _own_draft(session: Session, actor: Actor, consultation_id: int) -> Consulta
 
 
 def save_consultation(session: Session, actor: Actor, patient_id: int, data: ConsultationInput, *,
-                      finalize: bool, consultation_id: int | None = None) -> ConsultationOut:
-    """Save a draft, or finalize (validate → clinical record → timeline + audit)."""
+                      finalize: bool, consultation_id: int | None = None,
+                      occurred_at: datetime | None = None) -> ConsultationOut:
+    """Save a draft, or finalize (validate → clinical record → timeline + audit).
+
+    occurred_at: when the visit took place (naive UTC); defaults to now. Patient, doctor and organization
+    always come from the acting context — they cannot be overridden.
+    """
     _require_doctor_access(session, actor, patient_id)
     data = data.cleaned()
+    errors = validate_visit_time(occurred_at)
     if finalize:
-        errors = validate_for_finalize(data)
-        if errors:
-            raise ClinicalValidationError(errors)
+        errors |= validate_for_finalize(data)
+    if errors:
+        raise ClinicalValidationError(errors)
 
     now = utcnow()
     if consultation_id:
@@ -80,21 +103,23 @@ def save_consultation(session: Session, actor: Actor, patient_id: int, data: Con
             raise access_service.AccessDenied("Draft belongs to another patient")
     else:
         c = Consultation(patient_id=patient_id, provider_id=actor.id, organization_id=actor.organization_id,
-                         status=ConsultationStatus.DRAFT, date=now)
+                         status=ConsultationStatus.DRAFT, date=occurred_at or now)
         session.add(c)
     for f in FIELDS:
         setattr(c, f, getattr(data, f))
+    if occurred_at:
+        c.date = occurred_at
     c.updated_at = now
     session.flush()
 
     if finalize:
         c.status = ConsultationStatus.FINAL
-        c.date = now
+        c.date = occurred_at or c.date or now
         session.flush()
         summary = f"{c.complaint} — {c.assessment or c.diagnosis}"
         activity_service.record(session, actor, patient_id=patient_id, event=EventType.CONSULTATION,
                                 category=record_service.clinical_category(actor.organization.org_type),
-                                resource_type="consultations", resource_id=c.id, summary=summary, when=now)
+                                resource_type="consultations", resource_id=c.id, summary=summary, when=c.date)
     else:
         activity_service.record(session, actor, patient_id=patient_id, event="consultation_draft_saved",
                                 resource_type="consultations", resource_id=c.id, on_timeline=False,
@@ -154,14 +179,18 @@ def add_note(session: Session, actor: Actor, patient_id: int, note_type: str, co
                      consultation_id=consultation_id, note_type=note_type, content=content, created_at=utcnow())
     session.add(n)
     session.flush()
+    # Internal clinician notes: on the clinical timeline for authorized clinicians, never shown to the patient.
     activity_service.record(session, actor, patient_id=patient_id, event=EventType.CLINICAL_NOTE,
                             category=record_service.clinical_category(actor.organization.org_type),
-                            resource_type="clinical_notes", resource_id=n.id, summary=content, when=n.created_at)
+                            resource_type="clinical_notes", resource_id=n.id, summary=content, when=n.created_at,
+                            patient_visible=note_type != NoteType.INTERNAL)
     return record_service.note_to_out(n)
 
 
 def notes_for_consultation(session: Session, actor: Actor, consultation_id: int) -> list[ClinicalNoteOut]:
     get_consultation(session, actor, consultation_id)  # authorizes
-    rows = session.scalars(select(ClinicalNote).where(ClinicalNote.consultation_id == consultation_id)
-                           .order_by(ClinicalNote.created_at))
+    stmt = select(ClinicalNote).where(ClinicalNote.consultation_id == consultation_id)
+    if actor.role == Role.PATIENT:
+        stmt = stmt.where(ClinicalNote.note_type != NoteType.INTERNAL)
+    rows = session.scalars(stmt.order_by(ClinicalNote.created_at))
     return [record_service.note_to_out(n) for n in rows]

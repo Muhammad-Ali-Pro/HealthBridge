@@ -4,9 +4,10 @@ Authored-record lists show only what this provider created (their own clinical w
 other providers' records — reading a patient's wider record goes through record_service.
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from core.models import (
@@ -16,13 +17,23 @@ from core.models import (
     ConsultationStatus,
     Document,
     LabOrder,
+    Patient,
     Prescription,
     PrescriptionStatus,
     Role,
     local_day_start_utc,
     utcnow,
 )
-from core.schemas import Actor, ConsultationOut, DocumentOut, LabOrderOut, MembershipOut, PrescriptionOut
+from core.schemas import (
+    AccessDecision,
+    Actor,
+    ConsultationOut,
+    DocumentOut,
+    LabOrderOut,
+    MembershipOut,
+    PatientIdentity,
+    PrescriptionOut,
+)
 from services import access_service, record_service, user_service
 
 
@@ -48,6 +59,51 @@ def my_consultations(session: Session, actor: Actor, *, today_only: bool = False
         stmt = stmt.where(Consultation.date >= start_of_today())
     return [record_service.consultation_to_out(c) for c in
             session.scalars(stmt.order_by(Consultation.date.desc()).limit(limit))]
+
+
+def todays_consultations(session: Session, actor: Actor) -> list[ConsultationOut]:
+    """Today at this organization — finalized and draft — newest first."""
+    _require_doctor(actor)
+    today = start_of_today()
+    rows = session.scalars(select(Consultation).where(
+        Consultation.provider_id == actor.id, Consultation.organization_id == actor.organization_id,
+        or_(Consultation.date >= today,
+            and_(Consultation.status == ConsultationStatus.DRAFT, Consultation.updated_at >= today)),
+    ).order_by(Consultation.date.desc()))
+    return [record_service.consultation_to_out(c) for c in rows]
+
+
+@dataclass
+class RecentPatient:
+    patient: PatientIdentity
+    last_interaction: datetime
+    activity: str                 # "Consultation" / "Prescription"
+    organization_name: str
+    organization_type: str
+    access: AccessDecision        # at the doctor's CURRENT organization
+
+
+def recent_patients(session: Session, actor: Actor, limit: int = 5) -> list[RecentPatient]:
+    """Patients this doctor recently documented care for (their own work only) with current access status.
+
+    Identity + where the doctor last saw them; no clinical content. Access is re-evaluated for the organization
+    the doctor is working at now, so a patient seen elsewhere may show as restricted here.
+    """
+    _require_doctor(actor)
+    latest: dict[int, tuple[datetime, str, object]] = {}
+    for c in session.scalars(select(Consultation).where(Consultation.provider_id == actor.id,
+                                                        Consultation.status == ConsultationStatus.FINAL)):
+        if c.patient_id not in latest or c.date > latest[c.patient_id][0]:
+            latest[c.patient_id] = (c.date, "Consultation", c.organization)
+    for rx in session.scalars(select(Prescription).where(Prescription.provider_id == actor.id,
+                                                         Prescription.issued_at.is_not(None))):
+        if rx.patient_id not in latest or rx.issued_at > latest[rx.patient_id][0]:
+            latest[rx.patient_id] = (rx.issued_at, "Prescription", rx.organization)
+    ordered = sorted(latest.items(), key=lambda kv: kv[1][0], reverse=True)[:limit]
+    return [RecentPatient(patient=PatientIdentity.model_validate(session.get(Patient, pid)), last_interaction=when,
+                          activity=what, organization_name=org.name, organization_type=org.org_type,
+                          access=access_service.authorize(session, actor, pid))
+            for pid, (when, what, org) in ordered]
 
 
 def my_prescriptions(session: Session, actor: Actor, *, limit: int | None = None,

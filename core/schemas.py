@@ -177,6 +177,7 @@ class TimelineEventOut(ORMModel):
     organization_type: str | None = None
     source_type: str
     summary: str
+    patient_visible: bool = True
 
     @computed_field
     @property
@@ -202,6 +203,7 @@ class ConsultationOut(BaseModel):
     diagnosis: str = ""
     treatment_plan: str = ""
     follow_up: str = ""
+    additional_notes: str = ""
 
 
 class ClinicalNoteOut(BaseModel):
@@ -430,8 +432,28 @@ class AIFlagOut(ORMModel):
     severity: str
     category: str
     message: str
+    evidence: dict = {}
+    sources: list[str] = []
     status: str
     created_at: datetime
+    reviewed_at: datetime | None = None
+    reviewed_by_name: str | None = None
+    review_note: str = ""
+    summary_id: int | None = None
+    organization_id: int | None = None
+
+
+class SourceDetail(BaseModel):
+    """'View source' for an AI statement: the underlying record, resolved through consent again."""
+    id: str
+    record_type: str
+    date: datetime | None
+    organization_name: str | None
+    organization_type: str | None
+    provider_name: str | None
+    title: str
+    excerpt: str
+    available: bool = True
 
 
 class AISummaryOut(ORMModel):

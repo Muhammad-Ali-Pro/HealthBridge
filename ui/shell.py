@@ -116,8 +116,8 @@ def avatar(name: str, size: int = 56) -> str:
     return avatar_html(name, size)
 
 
-def _clear_selections() -> None:
-    for k in [k for k in st.session_state if k.startswith("sel_")]:
+def _clear_selections(keep: tuple[str, ...] = ()) -> None:
+    for k in [k for k in st.session_state if k.startswith("sel_") and k not in keep]:
         del st.session_state[k]
 
 
@@ -186,9 +186,23 @@ def _on_user_change() -> None:
     _clear_selections()
 
 
+def switch_organization(org_id: int) -> None:
+    """Change the doctor's working organization. The open patient stays selected so access is re-evaluated
+    (consent, record filtering and AI context all follow the new organization automatically)."""
+    ss = st.session_state
+    ss["hb_org_id"] = org_id
+    for k in ("_org_ctl", "_org_top"):
+        ss.pop(k, None)
+    _clear_selections(keep=("sel_patient",))
+    ss["hb_flash"] = "Working organization changed — patient access re-checked for this organization."
+
+
 def _on_org_change() -> None:
-    st.session_state["hb_org_id"] = st.session_state["_org_ctl"]
-    _clear_selections()
+    switch_organization(st.session_state["_org_ctl"])
+
+
+def _on_org_top_change() -> None:
+    switch_organization(st.session_state["_org_top"])
 
 
 def _reset_demo() -> None:
@@ -293,6 +307,13 @@ def render_topbar(page, actor: Actor) -> None:
             if actor.role == Role.DOCTOR:
                 _header_search(page)
         with right, st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center", gap="small"):
+            memberships = st.session_state.get("hb_memberships", [])
+            if actor.role == Role.DOCTOR and len(memberships) > 1:
+                org_ids = [m.organization.id for m in memberships]
+                st.selectbox("Working at", org_ids, index=org_ids.index(actor.organization_id), key="_org_top",
+                             format_func={m.organization.id: f"Working at · {m.organization.name}" for m in memberships}.__getitem__,
+                             on_change=_on_org_top_change, label_visibility="collapsed", width=260,
+                             help="Patient consent is specific to you AND this organization.")
             st.button("Home page", icon=":material/home:", on_click=exit_demo, key="tb_home", type="tertiary",
                       help="Return to the HealthBridge home page to pick another demo role")
             html(badge_html(ROLE_LABELS[actor.role], ROLE_TONES[actor.role], ROLE_ICONS[actor.role]), width="content")
@@ -303,15 +324,25 @@ def render_topbar(page, actor: Actor) -> None:
         st.toast(flash, icon=":material/check_circle:")
 
 
-def _header_search(page) -> None:
-    query = st.text_input("Search patients", key="hb_search", placeholder="Find a patient by name or HB-ID",
-                          label_visibility="collapsed", icon=":material/search:")
+def _on_header_search() -> None:
+    """Runs only when the doctor actually submits a new top-bar search (never on page navigation)."""
     ss = st.session_state
-    if query != ss.get("_last_search", ""):
-        ss["_last_search"] = query
-        ss.pop("sel_patient", None)
-        if query and page.title != "Patients":
-            st.switch_page("views/doctor/patients.py")
+    query = (ss.get("hb_search") or "").strip()
+    if not query:          # clearing the box is not a new search: keep the open patient
+        return
+    ss.pop("sel_patient", None)     # a new search leaves the open patient and lists the matches
+    ss["pt_q"] = query              # the Patients page shows the same query
+    ss["_hb_search_go"] = True
+
+
+def _header_search(page) -> None:
+    ss = st.session_state
+    if ss.pop("_hb_search_clear", False):   # a patient was opened → empty the box (set before the widget exists)
+        ss["hb_search"] = ""
+    st.text_input("Search patients", key="hb_search", placeholder="Find a patient by name or HB-ID",
+                  label_visibility="collapsed", icon=":material/search:", on_change=_on_header_search)
+    if ss.pop("_hb_search_go", False) and page.title != "Patients":
+        st.switch_page("views/doctor/patients.py")
 
 
 def _profile_menu(actor: Actor) -> None:

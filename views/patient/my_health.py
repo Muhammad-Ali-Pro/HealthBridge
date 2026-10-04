@@ -34,6 +34,10 @@ with left:
     section_header("My last visit")
     if record.consultations:
         consultation_card(record.consultations[0], title="Last visit")
+        if len(record.consultations) > 1:
+            with st.expander(f"Earlier visits ({len(record.consultations) - 1})", icon=":material/history:"):
+                for c in record.consultations[1:]:
+                    consultation_card(c, title="Visit")
     else:
         empty_state("No visits yet", icon_name="stethoscope")
 with right:

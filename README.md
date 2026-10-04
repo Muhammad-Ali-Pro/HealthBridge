@@ -4,9 +4,9 @@
 
 HealthBridge connects clinics, hospitals, laboratories and pharmacies around a single patient-owned
 timeline. Patients decide which doctor — at which organization — can see which records, for how long.
-Hackathon MVP: Streamlit + SQLite + SQLAlchemy + Pydantic (+ LangGraph/OpenAI in a later phase).
+Hackathon MVP: Streamlit + SQLite + SQLAlchemy + Pydantic + LangGraph + Google Gemini (bring your own key).
 
-> **Synthetic data only.** AI (later phase) organises, summarises and flags *possible* discrepancies.
+> **Synthetic data only.** AI organises, summarises and flags *possible* discrepancies.
 > It never diagnoses, makes treatment decisions or changes medication. Agents may only write
 > `AIFlag` and `AISummary` records.
 
@@ -15,7 +15,7 @@ Hackathon MVP: Streamlit + SQLite + SQLAlchemy + Pydantic (+ LangGraph/OpenAI in
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-copy .env.example .env          # optional: OPENAI_API_KEY / OPENAI_MODEL for a later phase
+copy .env.example .env          # optional: developer GEMINI_API_KEY (testers can enter their own in the app)
 ```
 
 **Windows Smart App Control note:** if importing SQLAlchemy fails with
@@ -36,7 +36,7 @@ $env:DISABLE_SQLALCHEMY_CEXT = "1"
 
 The app opens on the **landing page** ("One patient. One connected health journey.") with four demo
 personas: Patient **Ahmed Khan**, Doctor **Dr. Arif** (South City Hospital & Clifton Medical Centre),
-**HealthPlus Pharmacy** and **HealthLab Diagnostics**. Use the profile menu to switch role, switch the
+**HealthPlus Pharmacy** and **HealthLab Diagnostics**. Use the profile menu to switch role, the **Working at** selector in the top bar to switch the
 organization a doctor is working at, reset demo data, or exit to the landing page.
 
 The SQLite DB is created and seeded on first load. A DB from an older schema version is rebuilt
@@ -50,16 +50,83 @@ grant it live from Consent & Access, then switch to the doctor.
 
 ## Doctor workflow (Phase 2)
 
-Find patient (name / HB-ID / phone) → consent check for *this doctor at this organization* → authorized
-profile (Overview · Timeline · Consultations · Prescriptions · Documents) → new consultation (draft or final,
-optional PDF/PNG/JPG attachment) → clinical notes → multi-medicine prescription (draft → issue with
-confirmation) → patient timeline + audit log update automatically.
+Find patient (name / HB-ID / phone) → consent check for *this doctor at this organization* → patient
+clinical workspace (Overview · Consultations · Prescriptions · Medical Timeline · Reports & Documents ·
+AI Clinical Copilot).
 
-**HealthBridge Clinical Copilot** (Doctor → AI Insights, or "Generate Clinical Summary" on a profile):
-consent service → authorized record → LangGraph `organize_records → clinical_summary → consistency_review →
-assemble`. Output is Pydantic-validated, every item cites a record ID, unsupported statements are removed,
-and the review step never recommends treatment. Set `OPENAI_API_KEY` and `OPENAI_MODEL` in `.env` to use
-OpenAI; without them (or if the API fails) a deterministic rule-based summary is shown instead.
+- **Consultations:** editable visit date/time (up to 30 days back), assessment, plan, *Additional notes*,
+  and an optional **internal clinician note**. Internal notes are filtered out in the service layer
+  for the patient (record, timeline, history), not just hidden in the UI. Use **Save & create prescription**
+  to open a prescription already linked to the new consultation.
+- **Prescriptions:** draft → issue (with confirmation) → choose a demo pharmacy → **Send prescription**
+  → status `sent` ("Sent to HealthPlus Pharmacy"). Dispensing and billing happen on the pharmacy side
+  (Phase 3).
+- **Working at** switcher in the top bar (doctors with more than one organization): switching re-checks
+  consent right away. The same patient can be open at one organization and locked at the other.
+- **Dashboard:** KPIs (today's consultations, total patients, pending follow-ups, prescriptions issued,
+  AI review items), today's consultations, recent patients with their access status here, and drafts.
+- **Medical timeline:** filters (All · Consultations · Prescriptions · Labs · Hospital · Pharmacy ·
+  Documents). Only filters for categories the patient shared are offered; the rest are shown as not shared.
+
+**HealthBridge Clinical Copilot** (the AI Clinical Copilot tab, or Doctor → AI Insights). Each agent
+has one narrow job:
+
+Doctor → consent check → **Record Retrieval Agent** → **Clinical Summary Agent** →
+**Safety / Consistency Agent** → doctor review
+
+- **Record Retrieval Agent:** reads only through `record_service.get_authorized_record`; it never
+  queries the database directly.
+- **Clinical Summary Agent:** builds the history, medications, prescriptions, important changes and
+  follow-up. Every item cites a record ID, and unsupported statements are removed.
+- **Safety / Consistency Agent:** flags possible discrepancies (allergy conflicts, duplicate or
+  overlapping prescriptions, missing documentation, date inconsistencies). It never recommends treatment.
+
+The doctor can **Accept** or **Dismiss** each flag, and use **View source** to see the record,
+organization, author and timestamp. Sources are re-read through consent. AI writes only `AISummary` /
+`AIFlag` rows, never clinical records.
+
+## AI provider — Google Gemini, bring your own key
+
+| | |
+|---|---|
+| Provider | Google Gemini API, via the official `google-genai` SDK (the only AI dependency) |
+| Default model | `gemini-3.8-flash`, configurable. Also offered: `gemini-3.5-flash`, `gemini-3.5-flash-lite` |
+| Why this model | On 2026-10-04, Google's [pricing page](https://ai.google.dev/gemini-api/docs/pricing) listed it as *free of charge* on the Gemini API free tier, and the [models page](https://ai.google.dev/gemini-api/docs/models) listed it as the current stable Flash model. It is fast enough for an interactive demo and supports JSON-schema output. Free-tier rate limits depend on your account; check them in [AI Studio](https://aistudio.google.com/rate-limit). |
+| Structured output | `response_mime_type="application/json"` + `response_json_schema` built from the Pydantic models, then Pydantic validation |
+
+**Get a key:** go to [Google AI Studio](https://aistudio.google.com/apikey), sign in, and choose
+**Get API key → Create API key**. It is free and needs no billing.
+
+**Use it in the demo (BYOK):** go to Doctor → patient → **AI Clinical Copilot** tab (or AI Insights) →
+**Configure AI**. Choose Google Gemini and a model, paste the key, then click **Connect & Test**. One
+small request, with no patient data, checks the key. The panel then shows *✓ AI provider connected ·
+Active model*. **Clear API Key** removes it.
+
+**Local developer configuration** (optional) in `.env`. A key entered in the UI takes precedence for that
+browser session. `GEMINI_API_KEY` in `.streamlit/secrets.toml` is also read.
+
+```ini
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-3.8-flash
+```
+
+**Key handling:**
+- The key is held only in that browser session's `st.session_state`, in server memory, for one session.
+- It is never written to SQLite, logs, audit entries, patient records or URLs, and never shared with another session.
+- Only its last four characters are ever displayed.
+- Provider errors are reduced to safe messages, so raw responses that could echo request details are never shown.
+- `.env`, `.env.*` and `.streamlit/secrets.toml` are git-ignored.
+
+**No key, quota exhausted, or model unavailable:** HealthBridge keeps working. The Copilot shows
+*AI is not connected* and a **Configure AI** button. You can still run a deterministic analysis. It is
+always labelled **"Demo AI response — live model unavailable"** and is never presented as model output.
+
+**Adding OpenAI later:**
+- Agents depend only on `agents/providers.AIProvider` (`generate_structured`, `test_connection`,
+  `get_model_name`). Only `agents/providers.py` imports a vendor SDK.
+- To add OpenAI, write an `OpenAIProvider(AIProvider)` subclass and register it in `PROVIDERS`.
+- Consent logic, the LangGraph workflow, the agents, the UI and the Pydantic schemas stay unchanged.
 
 ## Core model
 

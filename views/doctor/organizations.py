@@ -3,17 +3,12 @@ import streamlit as st
 from core.db import get_session
 from services import provider_service
 from ui.components import badge_html, card, esc, html, organization_card_html, page_header
-from ui.shell import current_actor
+from ui.shell import current_actor, switch_organization
 
 actor = current_actor()
 ss = st.session_state
 
 
-def _work_here(org_id: int) -> None:
-    ss["hb_org_id"] = org_id
-    ss.pop("_org_ctl", None)
-    for k in [k for k in ss if k.startswith("sel_")]:
-        del ss[k]
 
 
 with get_session() as s:
@@ -36,5 +31,5 @@ for i, (m, counts) in enumerate(orgs):
             <span class="k">Consultations</span><span class="v">{counts['consultations']}</span>
             <span class="k">Patients with access</span><span class="v">{counts['patients_with_access']}</span></div>""")
         if not acting:
-            st.button(f"Work at {o.name}", key=f"work_{o.id}", on_click=_work_here, args=(o.id,),
+            st.button(f"Work at {o.name}", key=f"work_{o.id}", on_click=switch_organization, args=(o.id,),
                       icon=":material/swap_horiz:", width="stretch")

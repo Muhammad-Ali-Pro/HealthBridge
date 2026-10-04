@@ -41,7 +41,7 @@ if to_send:
             labels = {p.id: f"{p.name} — {p.address.split(',')[0]}" for p in pharmacies}
             a.selectbox("Pharmacy", list(labels), format_func=labels.__getitem__, key=f"pharm_{rx.id}")
             with b:
-                phase_action("Send Prescription", "send", 2, key=f"send_{rx.id}", primary=True, stretch=True)
+                phase_action("Send Prescription", "send", 5, key=f"send_{rx.id}", primary=True, stretch=True)
 
 section_header("All prescriptions", f"{len(others)} prescriptions")
 if not others:

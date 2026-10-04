@@ -20,6 +20,7 @@ def record(
     on_timeline: bool = True,
     action: str = AuditAction.RECORD_CREATED,
     when=None,
+    patient_visible: bool = True,
 ) -> None:
     """Timeline event (finalized records only) + audit entry carrying actor, organization and patient."""
     when = when or utcnow()
@@ -27,11 +28,12 @@ def record(
         timeline_service.append_event(
             session, patient_id=patient_id, event_type=event, record_category=category, ref_table=resource_type,
             ref_id=resource_id, actor_id=actor.id, organization_id=actor.organization_id, summary=summary,
-            source_type=SourceType.PROVIDER, occurred_at=when)
+            source_type=SourceType.PROVIDER, occurred_at=when, patient_visible=patient_visible)
     audit_service.log(
         session, action=action, actor_id=actor.id, actor_type=actor.role, patient_id=patient_id,
         provider_id=actor.id, organization_id=actor.organization_id, resource_type=resource_type,
         resource_id=resource_id, timestamp=when,
-        # Summaries of drafts are not stored: drafts are private until finalized.
-        details={"event": event, "summary": summary if on_timeline else ""},
+        # Drafts and internal notes keep no content here: they are not part of the patient's view.
+        details={"event": event, "summary": summary if (on_timeline and patient_visible) else "",
+                 "patient_visible": patient_visible and on_timeline},
     )

@@ -72,7 +72,7 @@ left, right = st.columns([3, 2], gap="large")
 with left:
     fields = [("Reason for visit", c.complaint), ("Symptoms / notes", c.notes), ("Observations", c.observations),
               ("Assessment", c.assessment), ("Diagnosis", c.diagnosis), ("Treatment plan", c.treatment_plan),
-              ("Follow-up", c.follow_up)]
+              ("Follow-up", c.follow_up), ("Additional notes", c.additional_notes)]
     rows = "".join(f'<div style="padding:.6rem 0;border-bottom:1px solid var(--hb-border)"><div class="hb-form-section" style="margin:0">{esc(k)}</div>'
                    f'<div style="font-size:.92rem;margin-top:.2rem;white-space:pre-wrap">{esc(v) if v else "<span style=color:var(--hb-muted)>Not documented</span>"}</div></div>'
                    for k, v in fields)
@@ -94,6 +94,7 @@ with right:
             st.markdown(f'<div class="hb-form-section">{icon("note_add", 14)} Add clinical note</div>', unsafe_allow_html=True)
             note_type = st.selectbox("Note type", list(NOTE_TYPES), format_func=NOTE_TYPES.__getitem__)
             content = st.text_area("Note", height=90, placeholder=f"Written by {actor.user.name}")
+            st.caption("Internal clinical notes are visible to authorized clinicians only — never to the patient.")
             if st.form_submit_button("Save note", icon=":material/save:", type="primary"):
                 try:
                     with get_session() as s:

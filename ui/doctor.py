@@ -22,7 +22,17 @@ ss = st.session_state
 
 def open_patient(patient_id: int) -> None:
     ss["sel_patient"] = patient_id
+    ss["_hb_search_clear"] = True   # the search did its job; don't let it interfere with the open workspace
     st.switch_page(PATIENTS)
+
+
+VISIT_STATE = ("ce_visit_for", "ce_visit_date", "ce_visit_time", "ce_visit_max")
+
+
+def reset_visit_time() -> None:
+    """Forget the consultation form's visit date/time so the next form starts from 'now' (or the draft's time)."""
+    for k in VISIT_STATE:
+        ss.pop(k, None)
 
 
 def new_consultation(patient_id: int | None) -> None:
@@ -30,12 +40,14 @@ def new_consultation(patient_id: int | None) -> None:
         ss["sel_patient"] = patient_id
     ss.pop("sel_edit_consultation", None)
     ss.pop("consult_errors", None)
+    reset_visit_time()
     st.switch_page(CONSULTATION_EDITOR)
 
 
 def edit_consultation(consultation_id: int, patient_id: int) -> None:
     ss["sel_patient"], ss["sel_edit_consultation"] = patient_id, consultation_id
     ss.pop("consult_errors", None)
+    reset_visit_time()
     st.switch_page(CONSULTATION_EDITOR)
 
 
@@ -97,7 +109,7 @@ def consent_banner(actor: Actor, decision: AccessDecision, patient_name: str) ->
         return
     elsewhere = _access_elsewhere(actor, decision.patient_id)
     hint = (f'<div class="s" style="margin-top:.6rem">{icon("info", 14)} You do have access when working at '
-            f'<b>{esc(", ".join(elsewhere))}</b> — switch organization from your profile menu.</div>' if elsewhere else "")
+            f'<b>{esc(", ".join(elsewhere))}</b> — switch organization using the “Working at” selector in the top bar.</div>' if elsewhere else "")
     html(f"""<div class="hb-access locked" style="display:block;border-color:#E3C9C2;background:#FBF4F2">
       <div style="display:flex;gap:.6rem;align-items:center;color:#8A2E20">{icon("lock", 20, fill=True)}
         <div class="t" style="font-size:1rem;color:#8A2E20;letter-spacing:.04em">ACCESS RESTRICTED</div></div>

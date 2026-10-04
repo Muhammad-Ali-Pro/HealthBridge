@@ -142,14 +142,16 @@ def test_drug_catalog_loads():
     assert len(names) == len(set(names)) == 30
 
 
-def test_model_comes_from_environment(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+def test_ai_provider_and_model_come_from_environment(monkeypatch):
+    for var in ("GEMINI_API_KEY", "GEMINI_MODEL", "AI_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("AI_ENABLED", "true")
-    assert load_settings().llm_available is False
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("OPENAI_MODEL", "some-model")
     s = load_settings()
-    assert s.openai_model == "some-model" and s.llm_available is True
+    assert s.ai_provider == "gemini" and s.env_ai_configured is False and s.gemini_model is None
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    s = load_settings()
+    assert s.gemini_model == "gemini-3.5-flash-lite" and s.env_ai_configured is True
+    assert "test-key-not-real" not in repr(s)
     monkeypatch.setenv("AI_ENABLED", "false")
-    assert load_settings().llm_available is False
+    assert load_settings().env_ai_configured is False

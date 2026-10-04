@@ -17,7 +17,7 @@ from enum import StrEnum
 from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def utcnow() -> datetime:
@@ -176,6 +176,7 @@ class AuditAction(StrEnum):
     RECORD_CREATED = "RECORD_CREATED"
     RECORD_UPDATED = "RECORD_UPDATED"
     AI_SUMMARY_GENERATED = "AI_SUMMARY_GENERATED"
+    AI_FLAG_REVIEWED = "AI_FLAG_REVIEWED"
 
 
 class FlagSeverity(StrEnum):
@@ -185,9 +186,9 @@ class FlagSeverity(StrEnum):
 
 
 class FlagStatus(StrEnum):
-    OPEN = "open"
-    ACKNOWLEDGED = "acknowledged"
-    DISMISSED = "dismissed"
+    OPEN = "open"            # awaiting clinician review
+    ACCEPTED = "accepted"    # clinician confirms the flag is valid and worth acting on
+    DISMISSED = "dismissed"  # clinician judged the flag not relevant
 
 
 class Base(DeclarativeBase):
@@ -317,6 +318,7 @@ class Consultation(Base):
     diagnosis: Mapped[str] = mapped_column(Text, default="")
     treatment_plan: Mapped[str] = mapped_column(Text, default="")
     follow_up: Mapped[str] = mapped_column(Text, default="")
+    additional_notes: Mapped[str] = mapped_column(Text, default="")   # patient-visible extra notes
 
     patient: Mapped[Patient] = relationship()
     provider: Mapped[User] = relationship()
@@ -540,6 +542,8 @@ class TimelineEvent(Base):
     organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"))
     source_type: Mapped[str] = mapped_column(String(20), default=SourceType.PROVIDER)
     summary: Mapped[str] = mapped_column(Text, default="")
+    # False for internal clinician notes: shown to authorized clinicians, never to the patient.
+    patient_visible: Mapped[bool] = mapped_column(Boolean, default=True)
 
     actor: Mapped[User | None] = relationship()
     organization: Mapped[Organization | None] = relationship()
@@ -564,6 +568,12 @@ class AIFlag(Base):
     reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    # Flags are derived from ONE doctor's consent scope in ONE organization — visible only there.
+    summary_id: Mapped[int | None] = mapped_column(ForeignKey("ai_summaries.id"))
+    requested_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"))
+    sources: Mapped[list[str]] = mapped_column(JSON, default=list)   # cited record ids, e.g. ["RX-00001"]
 
     patient: Mapped[Patient] = relationship()
 

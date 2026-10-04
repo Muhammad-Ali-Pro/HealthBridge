@@ -38,7 +38,7 @@ from ui.components import (
     patient_identity_html,
     plural,
     section_header,
-    TIMELINE_FILTERS,
+    authorized_filters,
     document_card_html,
     filter_timeline,
     patient_entry_html,
@@ -95,7 +95,8 @@ def patient_hero(record: AuthorizedRecord, right_badge: str = "") -> None:
 
 def consultation_card(c: ConsultationOut, title: str = "Most recent consultation") -> None:
     fields = [("Symptoms / notes", c.notes), ("Observations", c.observations), ("Assessment", c.assessment),
-              ("Diagnosis", c.diagnosis), ("Treatment plan", c.treatment_plan), ("Follow-up", c.follow_up)]
+              ("Diagnosis", c.diagnosis), ("Treatment plan", c.treatment_plan), ("Follow-up", c.follow_up),
+              ("Additional notes", c.additional_notes)]   # patient-visible; internal clinician notes are never here
     rows = "".join(f'<span class="k">{esc(k)}</span><span class="v">{esc(v)}</span>' for k, v in fields if v)
     html(f"""
       <div class="hb-card">
@@ -111,11 +112,18 @@ NOTE_LABELS = {"consultation": "Consultation note", "follow_up": "Follow-up note
                "internal": "Internal clinical note"}
 
 
+def note_badge_html(n: ClinicalNoteOut) -> str:
+    """Patient-visible clinical record vs internal clinician note."""
+    if n.note_type == "internal":
+        return badge_html("Internal note · not visible to patient", "coral", "visibility_off")
+    return badge_html(NOTE_LABELS.get(n.note_type, "Note"), "teal", "clinical_notes")
+
+
 def notes_list_html(notes: Sequence[ClinicalNoteOut]) -> str:
     return "".join(f"""
       <div style="padding:.65rem 0;border-bottom:1px solid var(--hb-border)">
         <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:center;flex-wrap:wrap">
-          <span>{badge_html(NOTE_LABELS.get(n.note_type, "Note"), "teal", "clinical_notes")}
+          <span>{note_badge_html(n)}
             <span style="font-size:.78rem;color:var(--hb-navy-600);font-weight:600">Written by {esc(n.provider_name)}</span></span>
           <span style="font-size:.74rem;color:var(--hb-muted)">{esc(fmt_when(n.created_at))}</span></div>
         <div style="font-size:.88rem;margin:.4rem 0">{esc(n.content)}</div>
@@ -127,7 +135,7 @@ def notes_card(notes: Sequence[ClinicalNoteOut], title: str = "Doctor's notes") 
     rows = "".join(f"""
       <div style="padding:.6rem 0;border-bottom:1px solid var(--hb-border)">
         <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:center">
-          {badge_html(NOTE_LABELS.get(n.note_type, "Note"), "teal", "clinical_notes")}
+          {note_badge_html(n)}
           <span style="font-size:.74rem;color:var(--hb-muted)">{esc(fmt_when(n.created_at))}</span></div>
         <div style="font-size:.86rem;margin:.35rem 0">{esc(n.content)}</div>
         <div style="display:flex;gap:.4rem;align-items:center">{org_badge_html(n.organization_name, n.organization_type)}
@@ -218,11 +226,20 @@ def authorized_record_view(record: AuthorizedRecord, organization_name: str | No
             html('<div class="hb-card" style="padding-top:.4rem">' + "".join(map(patient_entry_html, record.patient_entries)) + "</div>")
 
 
-def timeline_with_filters(events, key: str, title: str = "Medical timeline", filters=None) -> None:
-    """Timeline with filters (default: All · Consultations · Prescriptions · Labs · Hospital · Pharmacy · Documents)."""
-    filters = filters or TIMELINE_FILTERS
+def timeline_with_filters(events, key: str, title: str = "Medical timeline", filters=None, access=None) -> None:
+    """Timeline with filters: All · Consultations · Prescriptions · Labs · Hospital · Pharmacy · Documents.
+
+    With a doctor's `access`, only filters for consented categories are offered (the events themselves are
+    already filtered by record_service); the rest are listed as not shared.
+    """
+    locked: list[str] = []
+    if filters is None:
+        filters, locked = authorized_filters(access)
     counts = {f: sum(timeline_matches(e, f) for e in events) for f in filters}
     section_header(title, "Newest first · every entry shows its source")
+    if locked:
+        html(f'<div style="font-size:.78rem;color:var(--hb-muted);margin:-.3rem 0 .4rem">{icon("lock", 13)} Not shared with '
+             f'you: {esc(" · ".join(locked))}</div>')
     choice = st.segmented_control("Filter", filters, default="All", required=True, key=key,
                                   label_visibility="collapsed", format_func=lambda f: f"{f} ({counts[f]})")
     with st.container(key=f"hbcard_{key}"):

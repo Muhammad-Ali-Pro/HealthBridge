@@ -81,7 +81,11 @@ def test_conditions_hidden_without_consultation_scope(seeded, actor, pid):
     record = record_service.get_authorized_record(seeded, actor("Dr. Ayesha Malik"), pid("Bilal Chaudhry"))
     assert record.patient.conditions is None
     assert record.patient.allergies == ["NSAIDs"]  # safety-critical, shown with any consent
-    assert record.consultations == [] and [o.test_name for o in record.reports] == ["Lipid panel"]
+    assert [o.test_name for o in record.reports] == ["Lipid panel"]
+    # Consultations are not shared: Dr. Ayesha sees only the one she wrote herself (her own documentation),
+    # never Dr. Arif's consultation with Bilal at South City Hospital.
+    assert {(c.provider_name, c.organization_name) for c in record.consultations} == {
+        ("Dr. Ayesha Malik", "Clifton Family Clinic")}
 
 
 def test_out_of_scope_category_is_denied_and_audited(seeded, actor, pid):

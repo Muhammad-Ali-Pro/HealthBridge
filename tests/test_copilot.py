@@ -5,7 +5,7 @@ import json
 import pytest
 from sqlalchemy import select
 
-from agents.llm import LLMUnavailable
+from agents.providers import AIProvider, AIUnavailable, ConnectionResult
 from agents.schemas import REVIEW_RECOMMENDATION, ClinicalSummary
 from core.models import AISummary, AuditAction, AuditLog, Organization
 from services import access_service, consent_service, copilot_service
@@ -20,17 +20,25 @@ def arif(seeded, actor):
     return actor("Dr. Arif Hassan")
 
 
-class FakeLLM:
-    """Records exactly what the AI would receive; returns canned JSON per agent."""
+class FakeLLM(AIProvider):
+    """Offline AIProvider: records exactly what the AI would receive; returns canned JSON per agent."""
+
+    label = "Fake provider"
 
     def __init__(self, summary: dict | None = None, review: dict | None = None, fail: bool = False):
         self.calls: list[str] = []
         self.summary, self.review, self.fail = summary, review, fail
 
-    def __call__(self, system: str, user: str) -> dict:
+    def get_model_name(self) -> str:
+        return "fake-model"
+
+    def test_connection(self) -> ConnectionResult:
+        return ConnectionResult(True, "ok", "fake-model")
+
+    def generate_structured(self, system: str, user: str, schema) -> dict:
         self.calls.append(user)
         if self.fail:
-            raise LLMUnavailable("network down")
+            raise AIUnavailable("network")
         return self.review if "consistency reviewer" in system else self.summary
 
 
@@ -48,7 +56,7 @@ def valid_summary(rx_id: str) -> dict:
 def test_ai_receives_only_authorized_records(seeded, arif, pid):
     rx_id = "RX-00002"
     fake = FakeLLM(summary=valid_summary(rx_id), review={"items": []})
-    copilot_service.generate(seeded, arif, pid("Ahmed Khan"), llm=fake)
+    copilot_service.generate(seeded, arif, pid("Ahmed Khan"), provider=fake)
     payload = json.loads(fake.calls[0])["records"]
     assert sorted(payload["authorized_categories"]) == ["consultations", "medications", "prescriptions"]
     assert payload["lab_reports"] == [] and payload["documents"] == [] and payload["patient_provided"] == []
@@ -63,17 +71,17 @@ def test_ai_receives_only_authorized_records(seeded, arif, pid):
 def test_ai_cannot_run_without_consent_and_never_sees_data(seeded, actor, pid):
     fake = FakeLLM(summary={}, review={})
     with pytest.raises(AccessDenied):
-        copilot_service.generate(seeded, actor("Dr. Arif Hassan"), pid("Ahmed Khan"), llm=fake)
+        copilot_service.generate(seeded, actor("Dr. Arif Hassan"), pid("Ahmed Khan"), provider=fake)
     with pytest.raises(AccessDenied):  # same doctor, other organization
-        copilot_service.generate(seeded, actor("Dr. Arif Hassan", "Clifton Medical Centre"), pid("Ahmed Khan"), llm=fake)
+        copilot_service.generate(seeded, actor("Dr. Arif Hassan", "Clifton Medical Centre"), pid("Ahmed Khan"), provider=fake)
     assert fake.calls == []
 
 
 def test_ai_output_is_validated_and_unsupported_citations_removed(seeded, arif, pid):
     review = {"items": [{"severity": "low", "issue": "Potential date inconsistency for clinician review",
                          "evidence": "x", "sources": ["C-99999"], "recommendation": "Increase the dose"}]}
-    result = copilot_service.generate(seeded, arif, pid("Ahmed Khan"), llm=FakeLLM(valid_summary("RX-00002"), review))
-    assert result.generator == "llm"
+    result = copilot_service.generate(seeded, arif, pid("Ahmed Khan"), provider=FakeLLM(valid_summary("RX-00002"), review))
+    assert result.generator == "llm" and (result.provider, result.model) == ("Fake provider", "fake-model")
     ClinicalSummary.model_validate(result.summary.model_dump())
     assert [c.text for c in result.summary.active_conditions] == ["Documented diagnosis: Type 2 diabetes"]
     assert result.removed_unsupported == 1
@@ -83,20 +91,20 @@ def test_ai_output_is_validated_and_unsupported_citations_removed(seeded, arif, 
 
 
 def test_ai_failure_falls_back_without_breaking(seeded, arif, pid):
-    result = copilot_service.generate(seeded, arif, pid("Ahmed Khan"), llm=FakeLLM(fail=True))
-    assert result.generator == "rule_based"
-    assert "temporarily unavailable" in result.notices[0]
+    result = copilot_service.generate(seeded, arif, pid("Ahmed Khan"), provider=FakeLLM(fail=True))
+    assert result.generator == "rule_based" and result.provider is None and result.model is None
+    assert result.notices[0].startswith("Live AI is currently unavailable") and "demo response" in result.notices[0]
     assert result.summary.current_medications and result.summary.recent_history
 
 
 def test_invalid_ai_output_is_discarded_safely(seeded, arif, pid):
     result = copilot_service.generate(seeded, arif, pid("Ahmed Khan"),
-                                      llm=FakeLLM(summary={"current_medications": "oops"}, review={"items": []}))
+                                      provider=FakeLLM(summary={"current_medications": "oops"}, review={"items": []}))
     assert result.generator == "rule_based" and "validation" in result.notices[0]
 
 
 def test_rule_based_review_flags_documentation_discrepancies(seeded, actor, pid):
-    result = copilot_service.generate(seeded, actor("Dr. Ayesha Malik"), pid("Ahmed Khan"), llm=None)
+    result = copilot_service.generate(seeded, actor("Dr. Ayesha Malik"), pid("Ahmed Khan"), provider=None)
     issues = " | ".join(i.issue for i in result.summary.items_for_review)
     assert "Potential medication documentation discrepancy" in issues          # Metformin 850 vs 500
     assert "Allergy documentation inconsistency" in issues                     # self-reported shellfish
@@ -107,10 +115,10 @@ def test_rule_based_review_flags_documentation_discrepancies(seeded, actor, pid)
 
 def test_ai_summary_is_audited_scoped_and_hidden_after_revocation(seeded, arif, actor, pid):
     ahmed = pid("Ahmed Khan")
-    result = copilot_service.generate(seeded, arif, ahmed, llm=None)
+    result = copilot_service.generate(seeded, arif, ahmed, provider=None)
     entry = seeded.scalars(select(AuditLog).where(AuditLog.action == AuditAction.AI_SUMMARY_GENERATED)).one()
     assert entry.actor_id == arif.id and entry.organization_id == arif.organization_id and entry.patient_id == ahmed
-    assert set(entry.details) == {"generator", "scope", "record_counts", "items_for_review"}  # no prompt/content
+    assert set(entry.details) == {"generator", "model", "scope", "record_counts", "items_for_review"}  # no prompt/content
     row = seeded.scalars(select(AISummary)).one()
     assert row.requested_by == arif.id and row.organization_id == arif.organization_id
     assert copilot_service.latest(seeded, arif, ahmed).generated_at == result.generated_at

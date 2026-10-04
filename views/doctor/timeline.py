@@ -21,7 +21,7 @@ with head:
 
 if not shared:
     empty_state("No patients have shared records with you here",
-                f"Patients grant access to you at {org_name}. Switch organization from your profile menu.", "lock")
+                f"Patients grant access to you at {org_name}. Use the “Working at” switcher in the top bar to change organization.", "lock")
 else:
     ids = [e.patient.id for e in shared]
     with picker:
@@ -40,5 +40,4 @@ else:
             section_header("Current medications")
             html(f'<div class="hb-card">{medications_html([m for m in record.medications if m.current])}</div>')
     with right:
-        timeline_with_filters(record.timeline, key="dr_tl", title="Timeline",
-                              filters=["All", "Consultations", "Prescriptions", "Documents", "Medications"])
+        timeline_with_filters(record.timeline, key="dr_tl", title="Timeline", access=record.access)

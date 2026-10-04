@@ -10,3 +10,8 @@ data/uploads/
 # Product requirements document — kept out of the repository
 HealthBridge_AI_PRD_v2_Research_Backed.docx
 *.docx
+
+# Local secrets — never commit API keys
+.env.*
+!.env.example
+*.key

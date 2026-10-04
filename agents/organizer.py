@@ -39,13 +39,16 @@ def organize(record: AuthorizedRecord) -> tuple[dict, list[SourceRef]]:
         notes.append({"id": nid, "date": _d(n.created_at), "type": n.note_type, "provider": n.provider_name,
                       "organization": n.organization_name, "content": n.content})
 
+    consult_dates = {f"C-{c.id}": c.date.isoformat() for c in record.consultations}
     prescriptions = []
     for rx in sorted(record.prescriptions, key=lambda r: r.created_at):
         rid = src(rx.display_id, "prescription", f"Prescription by {rx.provider_name} · {rx.organization_name}",
                   _d(rx.created_at))
+        linked = f"C-{rx.consultation_id}" if rx.consultation_id and f"C-{rx.consultation_id}" in consult_dates else None
         prescriptions.append({
-            "id": rid, "date": _d(rx.created_at), "provider": rx.provider_name, "organization": rx.organization_name,
-            "status": rx.status, "items": [{"medicine": i.drug_name, "strength": i.strength, "dosage": i.dosage,
+            "id": rid, "date": _d(rx.created_at), "datetime": rx.created_at.isoformat(), "provider": rx.provider_name,
+            "organization": rx.organization_name, "status": rx.status, "pharmacy": rx.pharmacy_name,
+            "consultation": linked, "consultation_datetime": consult_dates.get(linked), "items": [{"medicine": i.drug_name, "strength": i.strength, "dosage": i.dosage,
                                             "route": i.route, "frequency": i.frequency, "duration_days": i.duration_days,
                                             "quantity": i.quantity} for i in rx.items]})
 
@@ -103,3 +106,11 @@ def organize(record: AuthorizedRecord) -> tuple[dict, list[SourceRef]]:
 def record_counts(dataset: dict) -> dict[str, int]:
     return {k: len(dataset[k]) for k in ("consultations", "clinical_notes", "prescriptions", "current_medications",
                                          "lab_reports", "documents", "patient_provided")}
+
+
+def retrieval_counts(dataset: dict) -> dict[str, int]:
+    """Record Retrieval Agent output per category. 0 means nothing was retrieved — usually not consented."""
+    return {"consultations": len(dataset["consultations"]), "clinical_notes": len(dataset["clinical_notes"]),
+            "prescriptions": len(dataset["prescriptions"]), "medications": len(dataset["current_medications"]),
+            "labs": len(dataset["lab_reports"]), "documents": len(dataset["documents"]),
+            "patient_provided": len(dataset["patient_provided"])}

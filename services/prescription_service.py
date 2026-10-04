@@ -1,4 +1,4 @@
-"""Doctor e-prescriptions: DRAFT → ISSUED (sending to a pharmacy is Phase 3).
+"""Doctor e-prescriptions: DRAFT → ISSUED → SENT to a pharmacy (verification/dispensing is Phase 3).
 
 * A prescription can hold several medicines.
 * Organization context comes from the acting context.
@@ -15,6 +15,8 @@ from core.models import (
     Consultation,
     ConsultationStatus,
     EventType,
+    Organization,
+    OrgType,
     Patient,
     Prescription,
     PrescriptionItem,
@@ -23,7 +25,7 @@ from core.models import (
     Role,
     utcnow,
 )
-from core.schemas import Actor, PrescriptionOut
+from core.schemas import Actor, OrganizationOut, PrescriptionOut
 from data.catalog import load_drug_catalog
 from services import access_service, activity_service, record_service
 from services.clinical_service import ClinicalValidationError
@@ -138,6 +140,38 @@ def issue(session: Session, actor: Actor, prescription_id: int) -> PrescriptionO
     activity_service.record(session, actor, patient_id=rx.patient_id, event=EventType.PRESCRIPTION_ISSUED,
                             category=RecordCategory.PRESCRIPTIONS, resource_type="prescriptions", resource_id=rx.id,
                             summary=f"{_label(rx.items)} prescribed · issued", when=now)
+    return record_service.prescription_to_out(rx)
+
+
+def available_pharmacies(session: Session) -> list[OrganizationOut]:
+    """Demo pharmacies a prescription can be sent to."""
+    rows = session.scalars(select(Organization).where(Organization.org_type == OrgType.PHARMACY)
+                           .order_by(Organization.name))
+    return [OrganizationOut.model_validate(o) for o in rows]
+
+
+def send_to_pharmacy(session: Session, actor: Actor, prescription_id: int, pharmacy_id: int) -> PrescriptionOut:
+    """Hand an ISSUED prescription to a pharmacy → SENT. The pharmacy's own workflow is Phase 3.
+
+    Only the prescribing doctor, in the organization where it was written, can send it — and only while
+    the patient's consent for that doctor here is still active.
+    """
+    rx = session.get(Prescription, prescription_id)
+    if rx is None or rx.provider_id != actor.id or rx.organization_id != actor.organization_id:
+        raise access_service.AccessDenied("Only the prescribing doctor at this organization can send this prescription")
+    _require_doctor_access(session, actor, rx.patient_id)
+    if rx.status != PrescriptionStatus.ISSUED:
+        raise ClinicalValidationError({"status": "Only an issued prescription that has not been sent can be sent "
+                                                 "to a pharmacy."})
+    pharmacy = session.get(Organization, pharmacy_id)
+    if pharmacy is None or pharmacy.org_type != OrgType.PHARMACY:
+        raise ClinicalValidationError({"pharmacy": "Choose a pharmacy."})
+    now = utcnow()
+    rx.pharmacy, rx.status, rx.sent_at = pharmacy, PrescriptionStatus.SENT, now
+    session.flush()
+    activity_service.record(session, actor, patient_id=rx.patient_id, event=EventType.PRESCRIPTION_SENT,
+                            category=RecordCategory.PRESCRIPTIONS, resource_type="prescriptions", resource_id=rx.id,
+                            summary=f"{_label(rx.items)} sent to {pharmacy.name}", when=now)
     return record_service.prescription_to_out(rx)
 
 

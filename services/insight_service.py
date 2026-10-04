@@ -18,7 +18,9 @@ def _patient_ids(session: Session, actor: Actor) -> list[int]:
 
 
 def list_flags(session: Session, actor: Actor, status: str | None = None) -> list[AIFlagOut]:
-    stmt = select(AIFlag).where(AIFlag.patient_id.in_(_patient_ids(session, actor)))
+    """Flags THIS doctor's copilot runs produced in THIS organization, for patients still consented here."""
+    stmt = select(AIFlag).where(AIFlag.patient_id.in_(_patient_ids(session, actor)), AIFlag.requested_by == actor.id,
+                                AIFlag.organization_id == actor.organization_id)
     if status:
         stmt = stmt.where(AIFlag.status == status)
     out = []

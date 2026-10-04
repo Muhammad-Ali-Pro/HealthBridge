@@ -69,6 +69,22 @@ def _local(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc).astimezone()
 
 
+def local_now() -> datetime:
+    """The current local time (aware). Forms read 'now' through this one function."""
+    return datetime.now().astimezone()
+
+
+def to_local(dt: datetime) -> datetime:
+    """Naive-UTC timestamp → aware local datetime (for editing in forms)."""
+    return _local(dt)
+
+
+def local_to_utc(local_date, local_time) -> datetime:
+    """Local date + time from a form → naive UTC for storage."""
+    aware = datetime.combine(local_date, local_time).astimezone()
+    return aware.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def fmt_date(dt: datetime) -> str:
     return _local(dt).strftime("%d %b %Y")
 
@@ -558,6 +574,20 @@ EVENT_STYLE = {
 TIMELINE_FILTERS = ["All", "Consultations", "Prescriptions", "Labs", "Hospital", "Pharmacy", "Documents"]
 
 
+# Which consent categories make each filter meaningful for a doctor.
+FILTER_CATEGORIES = {"Consultations": ("consultations",), "Prescriptions": ("prescriptions",),
+                     "Labs": ("lab_reports", "imaging_reports"), "Hospital": ("hospital_records",),
+                     "Pharmacy": ("prescriptions",), "Documents": ("documents",)}
+
+
+def authorized_filters(access) -> tuple[list[str], list[str]]:
+    """(filters to offer, filters locked by consent). The patient's own view gets every filter."""
+    if access is None or access.via == "self":
+        return list(TIMELINE_FILTERS), []
+    allowed = [f for f in TIMELINE_FILTERS[1:] if any(access.can(c) for c in FILTER_CATEGORIES[f])]
+    return ["All", *allowed], [f for f in TIMELINE_FILTERS[1:] if f not in allowed]
+
+
 def timeline_group(e: TimelineEventOut) -> str:
     if e.record_category == "hospital_records":
         return "Hospital"
@@ -618,13 +648,14 @@ def timeline(events: Sequence[TimelineEventOut], group_by_day: bool = True, empt
         person = e.actor_name if e.source_type == "provider" else None
         src = source_html(e.source_type, e.organization_name, e.organization_type, person)
         when = fmt_time(e.occurred_at) if group_by_day else fmt_when(e.occurred_at)
+        internal = "" if e.patient_visible else badge_html("Internal · clinicians only", "coral", "visibility_off")
         parts.append(f"""
           <div class="hb-tl-item">
             <div class="hb-tl-dot tone-{tone}">{icon(ic, 20)}</div>
             <div class="hb-tl-body">
               <div class="hb-tl-top"><span class="hb-tl-title">{esc(title)}</span><span class="hb-tl-when">{esc(when)}</span></div>
               <div class="hb-tl-text">{esc(e.summary)}</div>
-              <div class="hb-tl-meta"><span class="hb-src-lbl">Source</span>{src}</div>
+              <div class="hb-tl-meta"><span class="hb-src-lbl">Source</span>{src}{internal}</div>
             </div>
           </div>""")
     html(f'<div class="hb-timeline">{"".join(parts)}</div>')

@@ -3,7 +3,7 @@ import streamlit as st
 from core.db import get_session
 from core.models import RecordCategory
 from services import patient_service, record_service
-from ui import doctor
+from ui import copilot_view, doctor
 from ui.components import (
     badge_html,
     card,
@@ -13,6 +13,8 @@ from ui.components import (
     esc,
     html,
     icon,
+    lab_report_card,
+    org_badge_html,
     page_header,
     patient_entry_html,
     prescription_card_html,
@@ -24,7 +26,6 @@ from ui.shell import current_actor
 
 actor = current_actor()
 ss = st.session_state
-DOCTOR_FILTERS = ["All", "Consultations", "Prescriptions", "Documents", "Medications"]
 
 
 def _close() -> None:
@@ -35,7 +36,7 @@ def directory() -> None:
     page_header("Patients", f"Search the HealthBridge directory. Records open only when the patient has granted you "
                 f"access at {actor.organization.name}.", eyebrow="Patients")
     with card("pt_search"):
-        q = st.text_input("Search patients", key="pt_q", value=ss.get("hb_search", ""), icon=":material/person_search:",
+        q = st.text_input("Search patients", key="pt_q", icon=":material/person_search:",
                           placeholder="Name, HealthBridge ID (HB-000001) or phone number", label_visibility="collapsed")
         st.caption("Search results show identity only — never medical information.")
     with get_session() as s:
@@ -63,8 +64,10 @@ def directory() -> None:
 def profile(entry) -> None:
     p = entry.patient
     st.button("All patients", icon=":material/arrow_back:", on_click=_close, type="tertiary")
-    page_header("Patient profile", f"Working at {actor.organization.name}", eyebrow="Patients")
-    doctor.patient_header(p)
+    page_header("Patient clinical workspace", f"Working at {actor.organization.name}", eyebrow="Patients")
+    doctor.patient_header(p, right=org_badge_html(actor.organization.name, actor.organization.org_type)
+                          + f'<div style="font-size:.82rem;color:var(--hb-muted);margin-top:.3rem;text-align:right">'
+                            f'{esc(actor.user.name)}</div>')
     doctor.consent_banner(actor, entry.access, p.name)
     if not entry.access.allowed:
         return
@@ -81,7 +84,8 @@ def profile(entry) -> None:
         if st.button("Generate Clinical Summary", icon=":material/auto_awesome:"):
             doctor.generate_summary(p.id)
 
-    t_over, t_tl, t_cons, t_rx, t_docs = st.tabs(["Overview", "Timeline", "Consultations", "Prescriptions", "Documents"])
+    t_over, t_cons, t_rx, t_tl, t_docs, t_ai = st.tabs(["Overview", "Consultations", "Prescriptions", "Medical Timeline",
+                                                        "Reports & Documents", "AI Clinical Copilot"])
     clinical_ok = access.can(RecordCategory.CONSULTATIONS) or access.can(RecordCategory.HOSPITAL_RECORDS)
 
     with t_over:
@@ -112,7 +116,7 @@ def profile(entry) -> None:
 
     with t_tl:
         timeline_with_filters(record.timeline, key="pt_profile_tl", title="Authorized medical timeline",
-                              filters=DOCTOR_FILTERS)
+                              access=access)
 
     with t_cons:
         if not clinical_ok:
@@ -152,6 +156,17 @@ def profile(entry) -> None:
                 html('<div class="hb-card" style="padding-top:.4rem">' + "".join(map(patient_entry_html, record.patient_entries)) + "</div>")
             if not record.documents and not record.patient_entries:
                 empty_state("No documents yet", icon_name="description")
+        if access.can(RecordCategory.LAB_REPORTS) or access.can(RecordCategory.IMAGING_REPORTS):
+            section_header("Lab & imaging reports")
+            for o in record.reports:
+                lab_report_card(o)
+            if not record.reports:
+                empty_state("No reports yet", icon_name="lab_profile")
+        else:
+            doctor.locked_tab("Lab & imaging reports")
+
+    with t_ai:
+        copilot_view.panel(actor, p.id, p.name, key="profile_ai")
     html(f'<div style="font-size:.76rem;color:var(--hb-muted);margin-top:.6rem">{icon("visibility", 14)} '
          f'Opening this record was logged in {esc(p.name)}\'s access history.</div>')
 

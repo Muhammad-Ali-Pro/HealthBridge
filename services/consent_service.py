@@ -67,7 +67,8 @@ def search_providers(session: Session, query: str = "") -> list[ProviderOption]:
         .join(Organization, Organization.id == ProviderOrganization.organization_id)
         .where(User.role == Role.DOCTOR, ProviderOrganization.active.is_(True),
                Organization.org_type.in_([OrgType.CLINIC, OrgType.HOSPITAL]))
-        .order_by(User.name, Organization.name)
+        # Each doctor's primary organization first (e.g. Dr. Arif → South City Hospital), then their others.
+        .order_by(User.name, ProviderOrganization.is_primary.desc(), Organization.name)
     )
     if query.strip():
         q = f"%{query.strip()}%"

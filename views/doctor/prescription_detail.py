@@ -3,6 +3,7 @@ import streamlit as st
 from core.db import get_session
 from services import clinical_service, prescription_service
 from services.access_service import AccessDenied
+from services.clinical_service import ClinicalValidationError
 from ui import doctor
 from ui.components import (
     alert_card,
@@ -86,6 +87,52 @@ with right:
             doctor.view_consultation(linked.id)
     else:
         html('<div class="hb-card" style="font-size:.85rem;color:var(--hb-muted)">Not linked to a consultation.</div>')
+    is_author = rx.provider_name == actor.user.name and rx.organization_name == actor.organization.name
     if rx.status == "issued":
-        alert_card("Issued", "The patient can now choose a pharmacy. Sending to a pharmacy, verification and "
-                   "dispensing arrive in Phase 3.", "success", "verified")
+        section_header("Send to pharmacy")
+        if is_author:
+            with st.container(key="hbform_send_rx"):
+                with get_session() as s:
+                    pharmacies = prescription_service.available_pharmacies(s)
+                labels = {ph.id: f"{ph.name} — {ph.address.split(',')[0]}" for ph in pharmacies}
+                chosen = st.selectbox("Pharmacy (chosen with the patient)", list(labels), format_func=labels.__getitem__,
+                                      key="send_pharmacy")
+                st.caption("The pharmacy receives only what it needs to fill the prescription — never the wider record.")
+                if st.button("Send prescription", icon=":material/send:", type="primary", key="send_rx_btn"):
+                    ss["rx_send_confirm"] = chosen
+        else:
+            alert_card("Issued", "Only the prescribing doctor at the prescribing organization can send it.", "info")
+    elif rx.status != "draft" and rx.pharmacy_name:
+        alert_card(f"Sent to {rx.pharmacy_name}",
+                   f"Sent {fmt_datetime(rx.sent_at)}. Verification, dispensing and billing happen at the pharmacy "
+                   "(Phase 3)." if rx.sent_at else "Verification and dispensing happen at the pharmacy (Phase 3).",
+                   "success", "local_pharmacy")
+
+
+def _dismiss_send() -> None:
+    ss.pop("rx_send_confirm", None)
+
+
+@st.dialog("Send prescription to pharmacy", on_dismiss=_dismiss_send)
+def confirm_send(pharmacy_id: int) -> None:
+    with get_session() as s:
+        name = next(ph.name for ph in prescription_service.available_pharmacies(s) if ph.id == pharmacy_id)
+    st.markdown(f"Send **{rx.display_id}** for **{rx.patient_name}** to **{name}**?")
+    st.caption("The prescription status becomes Sent and it appears in the pharmacy's queue.")
+    c1, c2 = st.columns(2)
+    if c1.button("Cancel", width="stretch", key="send_cancel"):
+        _dismiss_send()
+        st.rerun()
+    if c2.button("Send to pharmacy", type="primary", width="stretch", icon=":material/send:", key="send_ok"):
+        _dismiss_send()
+        try:
+            with get_session() as s:
+                prescription_service.send_to_pharmacy(s, actor, rx.id, pharmacy_id)
+            ss["hb_flash"] = f"Sent to {name}."
+        except (ClinicalValidationError, AccessDenied) as exc:
+            ss["hb_flash"] = f"Could not send: {exc}"
+        st.rerun()
+
+
+if ss.get("rx_send_confirm") and rx.status == "issued":
+    confirm_send(ss["rx_send_confirm"])

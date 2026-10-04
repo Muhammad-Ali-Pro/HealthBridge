@@ -87,8 +87,12 @@ def patient_history(session: Session, actor: Actor, patient_id: int, limit: int 
         select(AuditLog).where(AuditLog.patient_id == patient_id, AuditLog.action.in_(actions))
         .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(limit)
     )
-    # A doctor's private drafts are not part of the patient's record until finalized.
-    return [_to_out(session, e) for e in rows if "draft" not in str((e.details or {}).get("event", ""))]
+    # Private drafts and internal clinician notes are not part of the patient's view.
+    def patient_may_see(e: AuditLog) -> bool:
+        d = e.details or {}
+        return "draft" not in str(d.get("event", "")) and d.get("patient_visible", True) is not False
+
+    return [_to_out(session, e) for e in rows if patient_may_see(e)]
 
 
 def provider_activity(session: Session, actor: Actor, limit: int = 20) -> list[AuditEntryOut]:

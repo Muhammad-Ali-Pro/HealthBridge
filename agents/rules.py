@@ -5,6 +5,7 @@ the LLM is unavailable. Wording is review-oriented: it never diagnoses or recomm
 """
 
 from collections import defaultdict
+from datetime import datetime
 
 from agents.schemas import (
     NOT_DOCUMENTED,
@@ -53,9 +54,33 @@ def summarize(dataset: dict) -> ClinicalSummary:
                    for v in r["values"] if v.get("flag") not in (None, "normal")]
         text = f"{r['date']} · {r['test']} ({r['laboratory']}): " + ("; ".join(flagged) if flagged else "values within reference ranges")
         reports.append(SourcedItem(text=text, sources=[r["id"]]))
+    follow_up = [SourcedItem(text=f"{c['date']} · {c['organization']} ({c['provider']}): {c['follow_up']}",
+                             sources=[c["id"]]) for c in reversed(dataset["consultations"]) if c["follow_up"].strip()][:3]
     return ClinicalSummary(patient_snapshot=snapshot, active_conditions=conditions, current_medications=meds,
-                           recent_history=history, recent_prescriptions=prescriptions, important_reports=reports,
-                           items_for_review=review(dataset))
+                           recent_history=history, recent_prescriptions=prescriptions,
+                           important_changes=important_changes(dataset), follow_up=follow_up,
+                           important_reports=reports, items_for_review=review(dataset))
+
+
+def important_changes(dataset: dict) -> list[SourcedItem]:
+    """Documented changes only — e.g. a medicine whose strength/frequency differs between prescriptions."""
+    changes: list[SourcedItem] = []
+    history: dict[str, list[tuple[dict, dict]]] = defaultdict(list)
+    for rx in dataset["prescriptions"]:  # chronological
+        for i in rx["items"]:
+            history[i["medicine"].strip().lower()].append((rx, i))
+    for entries in history.values():
+        for (rx_a, a), (rx_b, b) in zip(entries, entries[1:]):
+            if (a["strength"], a["frequency"]) != (b["strength"], b["frequency"]):
+                changes.append(SourcedItem(
+                    text=f"{b['medicine']}: documented as {a['strength']} {a['frequency']} ({rx_a['date']}), later "
+                         f"{b['strength']} {b['frequency']} ({rx_b['date']}).", sources=[rx_a["id"], rx_b["id"]]))
+    for rx in dataset["prescriptions"][-2:]:
+        if rx["status"] in ("issued", "sent"):
+            names = ", ".join(f"{i['medicine']} {i['strength']}" for i in rx["items"])
+            where = f" — sent to {rx['pharmacy']}" if rx.get("pharmacy") and rx["status"] == "sent" else ""
+            changes.append(SourcedItem(text=f"New prescription {rx['date']}: {names}{where}.", sources=[rx["id"]]))
+    return changes
 
 
 def review(dataset: dict) -> list[ReviewItem]:
@@ -73,7 +98,7 @@ def review(dataset: dict) -> list[ReviewItem]:
             evidence = "; ".join(f"{i['strength']} {i['frequency']} ({rx['id']}, {rx['date']}, {rx['provider']})"
                                  for rx, i in entries)
             items.append(ReviewItem(
-                severity="medium",
+                severity="medium", category="medication_discrepancy",
                 issue=f"Potential medication documentation discrepancy for clinician review: {name} is documented "
                       "with different strength or frequency across prescriptions.",
                 evidence=evidence, sources=[rx["id"] for rx, _ in entries]))
@@ -85,7 +110,8 @@ def review(dataset: dict) -> list[ReviewItem]:
     for meds in current.values():
         if len(meds) > 1:
             items.append(ReviewItem(
-                severity="medium", issue=f"{meds[0]['medicine']} appears in more than one active prescription.",
+                severity="medium", category="duplicate_medication",
+                issue=f"{meds[0]['medicine']} appears in more than one active prescription.",
                 evidence="; ".join(f"{m['strength']} {m['frequency']} ({m['source']})" for m in meds),
                 sources=[m["source"] for m in meds]))
 
@@ -96,7 +122,7 @@ def review(dataset: dict) -> list[ReviewItem]:
             word = e["title"].split("(")[0].strip().lower()
             if not any(word in a or a in word for a in documented):
                 items.append(ReviewItem(
-                    severity="medium",
+                    severity="medium", category="allergy_documentation",
                     issue="Allergy documentation inconsistency: a patient-reported allergy is not in the "
                           "clinician-documented allergy list.",
                     evidence=f"Patient-provided: {e['title']} ({e['date']}). Clinician-documented allergies: "
@@ -111,17 +137,40 @@ def review(dataset: dict) -> list[ReviewItem]:
             for a in documented:
                 if group and (group in a or a.rstrip("s") in group):
                     items.append(ReviewItem(
-                        severity="high",
+                        severity="high", category="allergy_conflict",
                         issue=f"Documented allergy may conflict with a prescribed medicine ({i['medicine']}).",
                         evidence=f"{i['medicine']} ({rx['id']}) is in the {group} group; documented allergy: {a}.",
                         sources=[rx["id"], "PROFILE"]))
 
-    # 5. Missing information in recent consultations.
+    # 5. Duplicate prescriptions: the same medicine, strength and frequency prescribed again within 7 days.
+    for entries in by_drug.values():
+        for (rx_a, a), (rx_b, b) in zip(entries, entries[1:]):
+            same = (a["strength"].lower(), a["frequency"].lower()) == (b["strength"].lower(), b["frequency"].lower())
+            days = (datetime.fromisoformat(rx_b["datetime"]) - datetime.fromisoformat(rx_a["datetime"])).days
+            if same and rx_a["id"] != rx_b["id"] and abs(days) <= 7:
+                items.append(ReviewItem(
+                    severity="medium", category="duplicate_medication",
+                    issue=f"Possible duplicate prescription: {a['medicine']} {a['strength']} {a['frequency']} "
+                          "prescribed twice within 7 days.",
+                    evidence=f"{rx_a['id']} ({rx_a['date']}) and {rx_b['id']} ({rx_b['date']}).",
+                    sources=[rx_a["id"], rx_b["id"]]))
+
+    # 6. Conflicting dates: a prescription dated before the consultation it is linked to.
+    for rx in dataset["prescriptions"]:
+        if rx.get("consultation_datetime") and rx["datetime"] < rx["consultation_datetime"]:
+            items.append(ReviewItem(
+                severity="low", category="date_inconsistency",
+                issue=f"Prescription {rx['id']} is dated before its linked consultation.",
+                evidence=f"Prescription {rx['datetime'][:16]} · consultation {rx['consultation_datetime'][:16]}.",
+                sources=[rx["id"], rx["consultation"]]))
+
+    # 7. Missing information in recent consultations.
     for c in dataset["consultations"][-3:]:
         missing = [label for key, label in (("diagnosis", "diagnosis"), ("follow_up", "follow-up instructions"))
                    if not c[key].strip()]
         if missing:
             items.append(ReviewItem(
-                severity="low", issue=f"Consultation on {c['date']} has no documented {' or '.join(missing)}.",
+                severity="low", category="missing_information",
+                issue=f"Consultation on {c['date']} has no documented {' or '.join(missing)}.",
                 evidence=f"{c['organization']} · {c['provider']} · reason: {c['reason']}", sources=[c["id"]]))
     return items

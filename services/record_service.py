@@ -21,6 +21,7 @@ from core.models import (
     LabOrder,
     LabOrderStatus,
     LabTestCategory,
+    NoteType,
     OrgType,
     Patient,
     PatientEntry,
@@ -79,7 +80,7 @@ def consultation_to_out(c: Consultation) -> ConsultationOut:
         record_category=clinical_category(c.organization.org_type), date=c.date, status=c.status,
         updated_at=c.updated_at, complaint=c.complaint,
         notes=c.notes, observations=c.observations, assessment=c.assessment, diagnosis=c.diagnosis,
-        treatment_plan=c.treatment_plan, follow_up=c.follow_up,
+        treatment_plan=c.treatment_plan, follow_up=c.follow_up, additional_notes=c.additional_notes,
     )
 
 
@@ -162,28 +163,44 @@ def is_current(rx: PrescriptionOut, now=None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _query_consultations(session: Session, patient_id: int, decision: AccessDecision) -> list[ConsultationOut]:
+Author = tuple[int, int] | None  # (provider_id, organization_id) of the viewing doctor
+
+
+def _authored(author: Author, provider_id, organization_id) -> bool:
+    """A doctor always sees records they wrote in their current organization (their own clinical work)."""
+    return author is not None and (provider_id, organization_id) == author
+
+
+def _query_consultations(session: Session, patient_id: int, decision: AccessDecision,
+                         author: Author = None) -> list[ConsultationOut]:
     # Drafts are private working copies of their author — never part of the shared clinical record.
     rows = session.scalars(select(Consultation).where(Consultation.patient_id == patient_id,
                                                       Consultation.status == ConsultationStatus.FINAL)
                            .order_by(Consultation.date.desc()))
-    return [c for c in map(consultation_to_out, rows) if decision.can(c.record_category)]
+    return [consultation_to_out(c) for c in rows
+            if decision.can(clinical_category(c.organization.org_type)) or _authored(author, c.provider_id, c.organization_id)]
 
 
-def _query_notes(session: Session, patient_id: int, decision: AccessDecision) -> list[ClinicalNoteOut]:
-    rows = session.scalars(select(ClinicalNote).where(ClinicalNote.patient_id == patient_id)
-                           .order_by(ClinicalNote.created_at.desc()))
-    return [n for n in map(note_to_out, rows) if decision.can(n.record_category)]
+def _query_notes(session: Session, patient_id: int, decision: AccessDecision,
+                 author: Author = None) -> list[ClinicalNoteOut]:
+    stmt = select(ClinicalNote).where(ClinicalNote.patient_id == patient_id)
+    if decision.via == "self":
+        # Internal clinician notes are never part of the patient's own view.
+        stmt = stmt.where(ClinicalNote.note_type != NoteType.INTERNAL)
+    rows = session.scalars(stmt.order_by(ClinicalNote.created_at.desc()))
+    return [note_to_out(n) for n in rows
+            if decision.can(clinical_category(n.organization.org_type)) or _authored(author, n.provider_id, n.organization_id)]
 
 
-def _query_prescriptions(session: Session, patient_id: int, decision: AccessDecision) -> list[PrescriptionOut]:
-    if not decision.can(RecordCategory.PRESCRIPTIONS):
-        return []
+def _query_prescriptions(session: Session, patient_id: int, decision: AccessDecision,
+                         author: Author = None) -> list[PrescriptionOut]:
+    shared = decision.can(RecordCategory.PRESCRIPTIONS)
     rows = session.scalars(select(Prescription).where(Prescription.patient_id == patient_id,
                                                       Prescription.status != PrescriptionStatus.DRAFT)
                            .order_by(Prescription.created_at.desc()))
     billing = decision.can(BILLING_CATEGORY)
-    return [prescription_to_out(rx, include_invoice=billing) for rx in rows]
+    return [prescription_to_out(rx, include_invoice=billing) for rx in rows
+            if shared or _authored(author, rx.provider_id, rx.organization_id)]
 
 
 def _query_medications(session: Session, patient_id: int, decision: AccessDecision) -> list[MedicationOut]:
@@ -210,10 +227,12 @@ def _query_reports(session: Session, patient_id: int, decision: AccessDecision) 
     return [o for o in map(lab_to_out, rows) if decision.can(o.record_category)]
 
 
-def _query_documents(session: Session, patient_id: int, decision: AccessDecision) -> list[DocumentOut]:
+def _query_documents(session: Session, patient_id: int, decision: AccessDecision,
+                     author: Author = None) -> list[DocumentOut]:
     rows = session.scalars(select(Document).where(Document.patient_id == patient_id)
                            .order_by(Document.created_at.desc()))
-    return [d for d in map(document_to_out, rows) if decision.can(d.record_category)]
+    return [document_to_out(d) for d in rows
+            if decision.can(d.record_category) or _authored(author, d.uploaded_by, d.organization_id)]
 
 
 def _query_patient_entries(session: Session, patient_id: int, decision: AccessDecision) -> list[PatientEntryOut]:
@@ -224,12 +243,15 @@ def _query_patient_entries(session: Session, patient_id: int, decision: AccessDe
     return [PatientEntryOut.model_validate(e) for e in rows]
 
 
-def _query_timeline(session: Session, patient_id: int, decision: AccessDecision) -> list[TimelineEventOut]:
-    rows = session.scalars(select(TimelineEvent).where(TimelineEvent.patient_id == patient_id)
-                           .order_by(TimelineEvent.occurred_at.desc(), TimelineEvent.id.desc()))
+def _query_timeline(session: Session, patient_id: int, decision: AccessDecision,
+                    author: Author = None) -> list[TimelineEventOut]:
+    stmt = select(TimelineEvent).where(TimelineEvent.patient_id == patient_id)
+    if decision.via == "self":
+        stmt = stmt.where(TimelineEvent.patient_visible.is_(True))  # hides internal clinician notes
+    rows = session.scalars(stmt.order_by(TimelineEvent.occurred_at.desc(), TimelineEvent.id.desc()))
     out = []
     for e in rows:
-        if not decision.can(e.record_category):
+        if not (decision.can(e.record_category) or _authored(author, e.actor_id, e.organization_id)):
             continue
         item = TimelineEventOut.model_validate(e)
         item.actor_name = e.actor.name if e.actor else None
@@ -260,16 +282,17 @@ def get_authorized_record(session: Session, actor: Actor, patient_id: int, view:
                                         decision.categories if decision.scope_type != "all" else "all",
                                         decision.consent_id)
     patient = session.get(Patient, patient_id)
+    author = (actor.id, actor.organization_id) if decision.via == "consent" else None
     return AuthorizedRecord(
         patient=_patient_out(patient, decision), access=decision,
-        consultations=_query_consultations(session, patient_id, decision),
-        notes=_query_notes(session, patient_id, decision),
-        prescriptions=_query_prescriptions(session, patient_id, decision),
+        consultations=_query_consultations(session, patient_id, decision, author),
+        notes=_query_notes(session, patient_id, decision, author),
+        prescriptions=_query_prescriptions(session, patient_id, decision, author),
         medications=_query_medications(session, patient_id, decision),
         reports=_query_reports(session, patient_id, decision),
-        documents=_query_documents(session, patient_id, decision),
+        documents=_query_documents(session, patient_id, decision, author),
         patient_entries=_query_patient_entries(session, patient_id, decision),
-        timeline=_query_timeline(session, patient_id, decision),
+        timeline=_query_timeline(session, patient_id, decision, author),
     )
 
 

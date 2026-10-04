@@ -2,7 +2,9 @@
 
 from sqlalchemy.orm import Session
 
-from core.models import FlagStatus, LabOrderStatus, PrescriptionStatus
+from datetime import timedelta
+
+from core.models import FlagStatus, LabOrderStatus, PrescriptionStatus, utcnow
 from core.schemas import Actor
 from services import clinical_service, insight_service, patient_service, provider_service, record_service
 
@@ -10,6 +12,7 @@ from services import clinical_service, insight_service, patient_service, provide
 def doctor_kpis(session: Session, actor: Actor) -> dict[str, int]:
     rxs = provider_service.my_prescriptions(session, actor, include_drafts=True)
     labs = provider_service.my_lab_orders(session, actor)
+    since = utcnow() - timedelta(days=30)
     return {
         "patients_with_access": len(patient_service.with_access(session, actor)),
         "consultations_today": len(provider_service.my_consultations(session, actor, today_only=True, this_org_only=True)),
@@ -22,4 +25,8 @@ def doctor_kpis(session: Session, actor: Actor) -> dict[str, int]:
         "results_ready": sum(o.status == LabOrderStatus.PUBLISHED for o in labs),
         "tests_pending": sum(o.status != LabOrderStatus.PUBLISHED for o in labs),
         "open_alerts": len(insight_service.list_flags(session, actor, status=FlagStatus.OPEN)),
+        # Issued (and possibly sent on) at this organization in the last 30 days.
+        "prescriptions_issued_30d": sum(rx.issued_at is not None and rx.issued_at >= since
+                                        and rx.organization_name == actor.organization.name for rx in rxs),
+        "ai_review_items": len(insight_service.list_flags(session, actor, status=FlagStatus.OPEN)),
     }
