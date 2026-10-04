@@ -90,8 +90,9 @@ class PatientIdentity(ORMModel):
 
 class PatientOut(PatientIdentity):
     user_id: int | None = None
-    allergies: list[str]
+    allergies: list[str]                    # clinician-documented
     conditions: list[str] | None  # None = not shared with this viewer
+    reported_allergies: list[str] = []      # patient-provided, not clinician-verified (D1: any active consent)
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +256,7 @@ class PatientEntryOut(ORMModel):
 
 
 class PrescriptionItemOut(ORMModel):
+    id: int | None = None
     drug_name: str
     strength: str
     dosage: str
@@ -280,6 +282,7 @@ class InvoiceOut(BaseModel):
     id: int
     invoice_number: str
     prescription_id: int
+    dispensing_id: int | None = None
     patient_id: int
     patient_name: str
     pharmacy_name: str
@@ -314,7 +317,10 @@ class PrescriptionOut(BaseModel):
     status_reason: str = ""
     items: list[PrescriptionItemOut]
     dispensings: list[DispensingOut] = []
-    invoice: InvoiceOut | None = None
+    invoice: InvoiceOut | None = None          # latest invoice (kept for existing views)
+    invoices: list[InvoiceOut] = []            # one per dispensing event (D13); empty unless the viewer may see billing
+    verified_at: datetime | None = None
+    verified_by_name: str | None = None
 
     @computed_field
     @property

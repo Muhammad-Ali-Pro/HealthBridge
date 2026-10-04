@@ -251,8 +251,14 @@ def chips_html(items: Sequence[str], tone: str = "neutral", icon_name: str | Non
     return "".join(f'<span class="hb-chip tone-{tone}">{ic}{esc(i)}</span>' for i in items)
 
 
-def allergy_chips_html(allergies: Sequence[str]) -> str:
-    return chips_html(allergies, "coral", "warning", empty="No known allergies")
+def allergy_chips_html(allergies: Sequence[str], reported: Sequence[str] = ()) -> str:
+    """Clinician-documented allergies (coral) and patient-reported ones (violet, labelled patient-provided)."""
+    if not allergies and not reported:
+        return chips_html([], empty="No known allergies")
+    clinical = chips_html(allergies, "coral", "warning") if allergies else ""
+    own = "".join(f'<span class="hb-chip tone-violet" title="Reported by the patient — not clinician-verified">'
+                  f'{icon("person_edit", 14)}{esc(a)} · Patient-provided</span>' for a in reported)
+    return clinical + own
 
 
 def condition_chips_html(conditions: Sequence[str] | None) -> str:
@@ -379,7 +385,7 @@ def patient_card_html(p: PatientOut, extra: str = "") -> str:
         <div class="body">
           <div class="name">{esc(p.name)}</div>
           <div class="meta">{esc(patient_meta(p))}</div>
-          <div>{allergy_chips_html(p.allergies)}</div>
+          <div>{allergy_chips_html(p.allergies, p.reported_allergies)}</div>
           <div>{condition_chips_html(p.conditions)}</div>{extra}
         </div>
       </div>"""
@@ -564,6 +570,8 @@ EVENT_STYLE = {
     "prescription_cancelled": ("Prescription cancelled", "cancel", "neutral"),
     "dispensing": ("Medicine dispensed", "local_pharmacy", "teal"),
     "invoice_issued": ("Invoice", "receipt_long", "amber"),
+    "payment_recorded": ("Payment recorded", "payments", "teal"),
+    "invoice_cancelled": ("Invoice cancelled", "cancel", "neutral"),
     "lab_ordered": ("Test ordered", "biotech", "navy"),
     "lab_report_published": ("Lab report published", "lab_profile", "teal"),
     "document_added": ("Document added", "description", "navy"),
@@ -591,7 +599,8 @@ def authorized_filters(access) -> tuple[list[str], list[str]]:
 def timeline_group(e: TimelineEventOut) -> str:
     if e.record_category == "hospital_records":
         return "Hospital"
-    if e.event_type in ("prescription_verified", "prescription_rejected", "dispensing", "invoice_issued"):
+    if e.event_type in ("prescription_verified", "prescription_rejected", "dispensing", "invoice_issued",
+                        "payment_recorded", "invoice_cancelled"):
         return "Pharmacy"
     if e.event_type in ("prescription_issued", "prescription_sent", "prescription_cancelled"):
         return "Prescriptions"

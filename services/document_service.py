@@ -30,13 +30,10 @@ def _upload_dir() -> Path:
     return Path(settings.upload_dir)
 
 
-def upload(session: Session, actor: Actor, patient_id: int, *, file_name: str, data: bytes, doc_type: str,
-           title: str, description: str = "", consultation_id: int | None = None) -> DocumentOut:
-    if actor.role != Role.DOCTOR or actor.organization_id is None:
-        raise access_service.AccessDenied("Only doctors working at an organization can upload documents here")
-    access_service.require(session, actor, patient_id)
-
-    ext = Path(file_name).suffix.lower()
+def _validate(session: Session, patient_id: int, *, file_name: str, data: bytes, doc_type: str, title: str,
+              consultation_id: int | None) -> str:
+    """Shared upload rules (doctor and patient). Returns the lower-case extension."""
+    ext = Path(file_name or "").suffix.lower()
     errors = {}
     if ext not in ALLOWED_TYPES:
         errors["file"] = "Only PDF, PNG or JPG files are supported."
@@ -46,22 +43,39 @@ def upload(session: Session, actor: Actor, patient_id: int, *, file_name: str, d
         errors["file"] = "Files must be 10 MB or smaller."
     if not (title or "").strip():
         errors["title"] = "Give the document a title."
+    elif len(title.strip()) > 200:
+        errors["title"] = "Keep the title under 200 characters."
+    if doc_type not in {t.value for t in DocumentType}:
+        errors["doc_type"] = "Choose a document type."
     if consultation_id:
         c = session.get(Consultation, consultation_id)
         if c is None or c.patient_id != patient_id:
             errors["consultation"] = "Attachment must belong to this patient's consultation."
     if errors:
         raise ClinicalValidationError(errors)
+    return ext
 
+
+def _store(patient_id: int, ext: str, data: bytes) -> str:
     folder = _upload_dir() / f"patient_{patient_id}"
     folder.mkdir(parents=True, exist_ok=True)
     stored = folder / f"{uuid.uuid4().hex}{ext}"
     stored.write_bytes(data)
+    return str(stored)
 
+
+def upload(session: Session, actor: Actor, patient_id: int, *, file_name: str, data: bytes, doc_type: str,
+           title: str, description: str = "", consultation_id: int | None = None) -> DocumentOut:
+    """A doctor adds a document to a consented patient's record (provider source)."""
+    if actor.role != Role.DOCTOR or actor.organization_id is None:
+        raise access_service.AccessDenied("Only doctors working at an organization can upload documents here")
+    access_service.require(session, actor, patient_id)
+    ext = _validate(session, patient_id, file_name=file_name, data=data, doc_type=doc_type, title=title,
+                    consultation_id=consultation_id)
     d = Document(patient_id=patient_id, source_type=SourceType.PROVIDER, uploaded_by=actor.id,
                  organization_id=actor.organization_id, doc_type=DocumentType(doc_type), title=title.strip(),
                  description=(description or "").strip(), file_name=Path(file_name).name, mime_type=ALLOWED_TYPES[ext],
-                 size_bytes=len(data), storage_path=str(stored), record_category=RecordCategory.DOCUMENTS,
+                 size_bytes=len(data), storage_path=_store(patient_id, ext, data), record_category=RecordCategory.DOCUMENTS,
                  consultation_id=consultation_id, created_at=utcnow())
     session.add(d)
     session.flush()
@@ -71,10 +85,33 @@ def upload(session: Session, actor: Actor, patient_id: int, *, file_name: str, d
     return record_service.document_to_out(d)
 
 
+def upload_own(session: Session, actor: Actor, *, file_name: str, data: bytes, doc_type: str, title: str,
+               description: str = "") -> DocumentOut:
+    """The patient adds a document to their own record — always marked patient-provided."""
+    from services.patient_entry_service import own_patient  # local import: avoids a service import cycle
+
+    patient = own_patient(session, actor)
+    ext = _validate(session, patient.id, file_name=file_name, data=data, doc_type=doc_type, title=title,
+                    consultation_id=None)
+    d = Document(patient_id=patient.id, source_type=SourceType.PATIENT, uploaded_by=actor.id, organization_id=None,
+                 doc_type=DocumentType(doc_type), title=title.strip(), description=(description or "").strip(),
+                 file_name=Path(file_name).name, mime_type=ALLOWED_TYPES[ext], size_bytes=len(data),
+                 storage_path=_store(patient.id, ext, data), record_category=RecordCategory.DOCUMENTS,
+                 created_at=utcnow())
+    session.add(d)
+    session.flush()
+    activity_service.record(session, actor, patient_id=patient.id, event=EventType.DOCUMENT_ADDED,
+                            category=RecordCategory.DOCUMENTS, resource_type="documents", resource_id=d.id,
+                            summary=f"{d.title} uploaded by you", when=d.created_at, details={"doc_type": d.doc_type})
+    return record_service.document_to_out(d)
+
+
 def _can_read(session: Session, actor: Actor, d: Document) -> bool:
-    if d.uploaded_by == actor.id:
-        return True
     decision = access_service.authorize(session, actor, d.patient_id)
+    if not decision.allowed:
+        return False          # revoked/expired consent hides even documents this doctor uploaded
+    if d.uploaded_by == actor.id and (decision.via == "self" or d.organization_id == actor.organization_id):
+        return True
     return decision.can(d.record_category)
 
 

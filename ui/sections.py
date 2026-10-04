@@ -86,7 +86,7 @@ def patient_hero(record: AuthorizedRecord, right_badge: str = "") -> None:
           <div>{right_badge}</div>
         </div>
         <div class="hb-hero-grid">
-          <div><div class="lbl">Allergies</div>{allergy_chips_html(p.allergies)}</div>
+          <div><div class="lbl">Allergies</div>{allergy_chips_html(p.allergies, p.reported_allergies)}</div>
           <div><div class="lbl">Conditions</div>{condition_chips_html(p.conditions)}</div>
           <div><div class="lbl">Current medications</div>{meds_html}</div>
         </div>

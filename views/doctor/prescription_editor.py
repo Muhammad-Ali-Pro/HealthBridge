@@ -40,6 +40,7 @@ with get_session() as s:
     identity = next(e.patient for e in patient_service.directory(s, actor) if e.patient.id == patient_id)
     if decision.allowed:
         allergies = prescription_service.patient_allergies(s, actor, patient_id)
+        reported = prescription_service.reported_allergies(s, actor, patient_id)
         consultations = prescription_service.patient_consultations(s, actor, patient_id)
 if not decision.allowed:
     doctor.consent_banner(actor, decision, identity.name)
@@ -88,7 +89,7 @@ html(f"""<div class="hb-card" style="display:flex;gap:1.5rem;flex-wrap:wrap;alig
   <div><div class="hb-form-section">{icon("stethoscope", 14)} Prescribing doctor</div><div style="font-weight:600">{esc(actor.user.name)}</div></div>
   <div><div class="hb-form-section">{icon("domain", 14)} Organization</div>{org_badge_html(org.name, org.org_type)}</div>
   <div><div class="hb-form-section">{icon("today", 14)} Date</div><div style="font-weight:600">{esc(fmt_date(draft.created_at) if draft else "Today")}</div></div>
-  <div><div class="hb-form-section">{icon("warning", 14)} Allergies</div>{allergy_chips_html(allergies)}</div>
+  <div><div class="hb-form-section">{icon("warning", 14)} Allergies</div>{allergy_chips_html(allergies, reported)}</div>
 </div>""")
 
 with st.container(key="hbform_rx_link"):
@@ -133,7 +134,7 @@ with st.container(key="hbform_rx_notes"):
     st.text_area("Notes", key="rx_notes", height=70, placeholder="Notes for the record (optional)")
 
 items = collect()
-for w in prescription_service.allergy_warnings(allergies, items):
+for w in prescription_service.allergy_warnings([*allergies, *(f"{r} (patient-reported)" for r in reported)], items):
     alert_card("Possible allergy conflict — verify before issuing", w, "danger", "warning")
 
 

@@ -59,7 +59,13 @@ def expiry_text(c: ConsentOut) -> str:
 # ---------------------------------------------------------------------------
 
 
-@st.dialog("Share records with a doctor", width="large")
+def _close_dialogs() -> None:
+    """Dialogs are opened through session flags so they stay open across reruns until closed."""
+    for k in ("ct_share_open", "ct_revoke"):
+        ss.pop(k, None)
+
+
+@st.dialog("Share records with a doctor", width="large", on_dismiss=_close_dialogs)
 def share_dialog() -> None:
     with get_session() as s:
         options = consent_service.search_providers(s)
@@ -123,6 +129,7 @@ def share_dialog() -> None:
 
     c1, c2 = st.columns(2)
     if c1.button("Cancel", width="stretch", key="share_cancel"):
+        _close_dialogs()
         st.rerun()
     label = "Confirm & Share All Records" if mode == "all" else "Share selected records"
     if c2.button(label, type="primary", width="stretch", disabled=mode == "selected" and not chosen, key="share_confirm"):
@@ -134,10 +141,11 @@ def share_dialog() -> None:
         ss["consent_success"] = consent.model_dump(mode="json")
         for k in [k for k in ss if k.startswith("share_")]:
             del ss[k]
+        _close_dialogs()
         st.rerun()
 
 
-@st.dialog("Revoke access")
+@st.dialog("Revoke access", on_dismiss=_close_dialogs)
 def revoke_dialog(c: ConsentOut) -> None:
     html(f"""<div style="display:flex;gap:.8rem;align-items:center;margin-bottom:.8rem">{avatar_html(c.provider_name, 44)}
       <div><div style="font-weight:700">{esc(c.provider_name)}</div>{org_badge_html(c.organization_name, c.organization_type)}</div></div>""")
@@ -146,11 +154,13 @@ def revoke_dialog(c: ConsentOut) -> None:
                "The change is recorded in your access history.")
     c1, c2 = st.columns(2)
     if c1.button("Cancel", width="stretch", key=f"rv_cancel_{c.id}"):
+        _close_dialogs()
         st.rerun()
     if c2.button("Revoke access", type="primary", width="stretch", key=f"rv_ok_{c.id}"):
         with get_session() as s:
             consent_service.revoke(s, actor, c.id)
         ss["hb_flash"] = f"Access revoked for {c.provider_name} at {c.organization_name}."
+        _close_dialogs()
         st.rerun()
 
 
@@ -195,7 +205,7 @@ with head:
                 eyebrow="Sharing & privacy")
 with action, st.container(horizontal=True, horizontal_alignment="right"):
     if st.button("Share Records with a Doctor", icon=":material/add:", type="primary", key="open_share"):
-        share_dialog()
+        ss["ct_share_open"] = True
 
 done = ss.pop("consent_success", None)
 if done:
@@ -220,7 +230,7 @@ for i, c in enumerate(active):
         if b1.button("View access", key=f"det_{c.id}", icon=":material/visibility:", width="stretch"):
             details_dialog(c, history)
         if b2.button("Revoke access", key=f"rev_{c.id}", icon=":material/block:", width="stretch"):
-            revoke_dialog(c)
+            ss["ct_revoke"] = c.id
 
 if past:
     section_header("Past access", "Revoked or expired — records were never deleted")
@@ -271,3 +281,12 @@ with tab_activity:
         esc((e.details or {}).get("summary", "")) or scope_cell(e),
         f'<span class="muted">{esc(fmt_datetime(e.timestamp))}</span>',
     ] for e in activity], empty="No activity yet")
+
+if ss.get("ct_share_open"):
+    share_dialog()
+elif ss.get("ct_revoke"):
+    target = next((c for c in active if c.id == ss["ct_revoke"]), None)
+    if target:
+        revoke_dialog(target)
+    else:
+        _close_dialogs()

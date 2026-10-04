@@ -79,7 +79,7 @@ def _record(session, *, patient_id, event_type, category, ref_table, ref_id, act
     audit_service.log(session, action=AuditAction.RECORD_CREATED, actor_id=actor_id, actor_type=actor_type,
                       patient_id=patient_id, provider_id=actor_id if actor_type == Role.DOCTOR else None,
                       organization_id=organization_id, resource_type=ref_table, resource_id=ref_id,
-                      timestamp=when, details={"event": event_type, "summary": summary})
+                      timestamp=when, details={"event": event_type, "summary": summary, "source": source})
 
 
 def seed(session: Session) -> None:
@@ -404,13 +404,15 @@ def _prescription(session, consult: Consultation, *, pharmacy, pharmacist, upto,
                 organization_id=consult.organization_id, when=when + gaps[0], summary=f"{label} sent to {pharmacy.name}")
     org_kw = dict(source=SourceType.ORGANIZATION, actor_type=Role.PHARMACIST)
     if PrescriptionStatus.VERIFIED in reached:
+        rx.verified_at, rx.verified_by = when + gaps[1], pharmacist.id
         _record(session, **common, event_type=EventType.PRESCRIPTION_VERIFIED, actor_id=pharmacist.id,
                 organization_id=pharmacy.id, when=when + gaps[1], summary=f"{label} verified by the pharmacist", **org_kw)
     if PrescriptionStatus.DISPENSED in reached:
         qty = item["quantity"]
         disp = Dispensing(prescription_id=rx.id, pharmacist_id=pharmacist.id, organization_id=pharmacy.id,
                           dispensed_at=when + gaps[2], status=DispensingStatus.DISPENSED,
-                          items_dispensed=[{"drug_name": item["drug_name"], "quantity_prescribed": qty, "quantity_dispensed": qty}])
+                          items_dispensed=[{"item_id": rx.items[0].id, "drug_name": item["drug_name"], "quantity_prescribed": qty,
+                                            "quantity_dispensed": qty, "status": DispensingStatus.DISPENSED, "note": ""}])
         session.add(disp)
         session.flush()
         _record(session, patient_id=consult.patient_id, category=C.PRESCRIPTIONS, ref_table="dispensings", ref_id=disp.id,

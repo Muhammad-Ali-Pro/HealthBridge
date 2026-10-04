@@ -12,13 +12,13 @@ from ui.components import (
     lab_report_card,
     org_badge_html,
     page_header,
-    phase_action,
     prescription_card,
     section_header,
     tile_html,
     timeline,
 )
 from ui.sections import consultations_table, medications_html, patient_hero
+from ui import patient as patient_actions
 from ui.shell import current_actor
 
 actor = current_actor()
@@ -41,9 +41,7 @@ st.write("")
 with st.container(horizontal=True, gap="small"):
     if st.button("Share records with a doctor", icon=":material/person_add:", type="primary"):
         st.switch_page("views/patient/consent.py")
-    phase_action("Upload a document", "upload_file", 5, key="pt_upload")
-    phase_action("Add a health note", "edit_note", 5, key="pt_note")
-    phase_action("Add allergy or information", "add_circle", 5, key="pt_info")
+    patient_actions.quick_actions(actor, key="home")
 st.write("")
 
 section_header("Health summary")
@@ -89,3 +87,4 @@ section_header("My Care Network", "Everyone connected to your timeline")
 nodes = [(d.name, "doctor", d.specialty or "Doctor") for d in network.doctors]
 nodes += [(o.organization.name, o.organization.org_type, o.relation) for o in network.organizations]
 care_network_diagram(record.patient.name, nodes, len(record.timeline))
+patient_actions.render_dialogs(actor)

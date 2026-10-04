@@ -63,6 +63,7 @@ NAV: dict[str, list[NavItem]] = {
         NavItem("views/patient/prescriptions.py", "Prescriptions", "prescriptions", "My HealthBridge"),
         NavItem("views/patient/medications.py", "Medications", "medication", "My HealthBridge"),
         NavItem("views/patient/reports.py", "Lab Reports", "lab_profile", "My HealthBridge"),
+        NavItem("views/patient/documents.py", "Documents", "folder_open", "My HealthBridge"),
         NavItem("views/patient/care_network.py", "Care Network", "diversity_3", "Sharing & privacy"),
         NavItem("views/patient/consent.py", "Consent & Access", "shield_person", "Sharing & privacy"),
     ],

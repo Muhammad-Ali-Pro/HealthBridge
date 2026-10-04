@@ -67,13 +67,16 @@ def allergy_warnings(allergies: list[str], items: list[MedicineInput]) -> list[s
     catalog = {d["name"].lower(): d for d in load_drug_catalog()}
     found = []
     for m in items:
-        drug = catalog.get(m.drug_name.strip().lower())
-        group = (drug or {}).get("allergy_group")
-        if not group:
+        name = m.drug_name.strip().lower()
+        if not name:
             continue
+        drug = catalog.get(name)
+        group = (drug or {}).get("allergy_group")
         for allergy in allergies:
             a = allergy.lower()
-            if group in a or a.rstrip("s") in group:
+            if name in a:   # the medicine itself is listed (e.g. a patient-reported "Ibuprofen" allergy)
+                found.append(f"{m.drug_name} is listed in the patient's {allergy} allergy. Verify before issuing.")
+            elif group and (group in a or a.rstrip("s") in group):
                 found.append(f"{m.drug_name} belongs to the {group} group — patient has a documented "
                              f"{allergy} allergy. Verify before issuing.")
     return found
@@ -151,15 +154,22 @@ def available_pharmacies(session: Session) -> list[OrganizationOut]:
 
 
 def send_to_pharmacy(session: Session, actor: Actor, prescription_id: int, pharmacy_id: int) -> PrescriptionOut:
-    """Hand an ISSUED prescription to a pharmacy → SENT. The pharmacy's own workflow is Phase 3.
+    """Hand an ISSUED prescription to a pharmacy → SENT (the pharmacy then verifies and dispenses).
 
-    Only the prescribing doctor, in the organization where it was written, can send it — and only while
-    the patient's consent for that doctor here is still active.
+    Who may send:
+    * the prescribing doctor, in the organization where it was written, while the patient's consent for that
+      doctor there is still active; or
+    * the patient it was written for (D5) — choosing where to collect their medicine.
     """
     rx = session.get(Prescription, prescription_id)
-    if rx is None or rx.provider_id != actor.id or rx.organization_id != actor.organization_id:
-        raise access_service.AccessDenied("Only the prescribing doctor at this organization can send this prescription")
-    _require_doctor_access(session, actor, rx.patient_id)
+    if actor.role == Role.PATIENT:
+        if rx is None or rx.patient.user_id != actor.id:
+            raise access_service.AccessDenied("You can only send your own prescriptions")
+        access_service.require_self(session, actor, rx.patient_id)
+    else:
+        if rx is None or rx.provider_id != actor.id or rx.organization_id != actor.organization_id:
+            raise access_service.AccessDenied("Only the prescribing doctor at this organization can send this prescription")
+        _require_doctor_access(session, actor, rx.patient_id)
     if rx.status != PrescriptionStatus.ISSUED:
         raise ClinicalValidationError({"status": "Only an issued prescription that has not been sent can be sent "
                                                  "to a pharmacy."})
@@ -169,10 +179,15 @@ def send_to_pharmacy(session: Session, actor: Actor, prescription_id: int, pharm
     now = utcnow()
     rx.pharmacy, rx.status, rx.sent_at = pharmacy, PrescriptionStatus.SENT, now
     session.flush()
+    by_patient = actor.role == Role.PATIENT
     activity_service.record(session, actor, patient_id=rx.patient_id, event=EventType.PRESCRIPTION_SENT,
                             category=RecordCategory.PRESCRIPTIONS, resource_type="prescriptions", resource_id=rx.id,
-                            summary=f"{_label(rx.items)} sent to {pharmacy.name}", when=now)
-    return record_service.prescription_to_out(rx)
+                            summary=f"{_label(rx.items)} sent to {pharmacy.name}" + (" by you" if by_patient else ""),
+                            when=now,
+                            # A patient's choice concerns the pharmacy; a doctor's send stays in their organization.
+                            organization_id=pharmacy.id if by_patient else "actor",
+                            details={"pharmacy_id": pharmacy.id})
+    return record_service.prescription_to_out(rx, include_invoice=by_patient)
 
 
 def discard_draft(session: Session, actor: Actor, prescription_id: int) -> None:
@@ -198,9 +213,17 @@ def get_prescription(session: Session, actor: Actor, prescription_id: int) -> Pr
 
 
 def patient_allergies(session: Session, actor: Actor, patient_id: int) -> list[str]:
-    """Allergies are visible to any doctor with an active consent (needed for safe prescribing)."""
+    """Clinician-documented allergies: visible to any doctor with an active consent (needed for safe prescribing)."""
     _require_doctor_access(session, actor, patient_id)
     return list(session.get(Patient, patient_id).allergies)
+
+
+def reported_allergies(session: Session, actor: Actor, patient_id: int) -> list[str]:
+    """Patient-reported allergies (D1): same rule — any active consent — always shown as patient-provided."""
+    from services.patient_entry_service import reported_allergies as _reported
+
+    _require_doctor_access(session, actor, patient_id)
+    return _reported(session, patient_id)
 
 
 def patient_consultations(session: Session, actor: Actor, patient_id: int) -> list:

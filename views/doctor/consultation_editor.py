@@ -53,6 +53,7 @@ with get_session() as s:
     decision = access_service.authorize(s, actor, patient_id)
     identity = next(e.patient for e in patient_service.directory(s, actor) if e.patient.id == patient_id)
     allergies = prescription_service.patient_allergies(s, actor, patient_id) if decision.allowed else []
+    reported = prescription_service.reported_allergies(s, actor, patient_id) if decision.allowed else []
 if not decision.allowed:
     doctor.consent_banner(actor, decision, identity.name)
     st.stop()
@@ -63,7 +64,7 @@ html(f"""<div class="hb-card" style="display:flex;gap:1.5rem;flex-wrap:wrap;alig
     <div style="font-size:.8rem;color:var(--hb-muted)">{esc(identity.display_id)} · {identity.age} yrs · {esc(identity.sex.title())}</div></div>
   <div><div class="hb-form-section">{icon("stethoscope", 14)} Provider</div><div style="font-weight:600">{esc(actor.user.name)}</div></div>
   <div><div class="hb-form-section">{icon("domain", 14)} Organization</div>{org_badge_html(org.name, org.org_type)}</div>
-  <div><div class="hb-form-section">{icon("warning", 14)} Allergies</div>{allergy_chips_html(allergies)}</div>
+  <div><div class="hb-form-section">{icon("warning", 14)} Allergies</div>{allergy_chips_html(allergies, reported)}</div>
 </div>""")
 if errors:
     html(f'<div class="hb-alert danger">{icon("error", 20, fill=True)}<div><div class="t">Please complete the highlighted fields</div>'

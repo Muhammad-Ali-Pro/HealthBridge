@@ -31,7 +31,7 @@ def list_prescriptions(session: Session, actor: Actor, statuses: list[str] | Non
     if statuses:
         stmt = stmt.where(Prescription.status.in_(statuses))
     rows = session.scalars(stmt.order_by(Prescription.created_at.desc()))
-    return [record_service.prescription_to_out(rx, include_reason=False, include_invoice=True) for rx in rows]
+    return [record_service.prescription_to_out(rx, include_reason=False, include_invoice=True, pharmacy_view=True) for rx in rows]
 
 
 def queue_overview(session: Session, actor: Actor) -> dict[str, int]:

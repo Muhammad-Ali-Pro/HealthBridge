@@ -104,34 +104,44 @@ def document_to_out(d: Document) -> DocumentOut:
 
 
 def invoice_to_out(i: Invoice) -> InvoiceOut:
-    return InvoiceOut(
-        id=i.id, invoice_number=i.invoice_number, prescription_id=i.prescription_id, patient_id=i.patient_id,
-        patient_name=i.patient.name, pharmacy_name=i.organization.name, items=i.items, total=i.total,
-        amount_paid=i.amount_paid, currency=i.currency, payment_status=i.payment_status, created_at=i.created_at,
-    )
+    return InvoiceOut(id=i.id, invoice_number=i.invoice_number, prescription_id=i.prescription_id,
+                      dispensing_id=i.dispensing_id, patient_id=i.patient_id, patient_name=i.patient.name,
+                      pharmacy_name=i.organization.name, items=i.items, total=i.total, amount_paid=i.amount_paid,
+                      currency=i.currency, payment_status=i.payment_status, created_at=i.created_at)
 
 
-def dispensing_to_out(d: Dispensing) -> DispensingOut:
+def dispensing_to_out(d: Dispensing, include_internal: bool = False) -> DispensingOut:
+    """Pharmacist notes (event and line notes) are pharmacy-internal: kept only for the pharmacy's own view."""
+    lines = d.items_dispensed or []
+    if not include_internal:
+        lines = [{k: v for k, v in line.items() if k != "note"} for line in lines]
     return DispensingOut(id=d.id, pharmacist_name=d.pharmacist.name, pharmacy_name=d.organization.name,
-                         dispensed_at=d.dispensed_at, status=d.status, items=d.items_dispensed,
-                         substitutions=d.substitutions, notes=d.notes)
+                         dispensed_at=d.dispensed_at, status=d.status, items=lines,
+                         substitutions=d.substitutions, notes=d.notes if include_internal else "")
 
 
-def prescription_to_out(rx: Prescription, include_reason: bool = True, include_invoice: bool = False) -> PrescriptionOut:
+def prescription_to_out(rx: Prescription, include_reason: bool = True, include_invoice: bool = False,
+                        pharmacy_view: bool = False) -> PrescriptionOut:
+    """`include_invoice`: billing (only the patient and the dispensing pharmacy).
+    `pharmacy_view`: the dispensing pharmacy's own view (keeps pharmacist-internal notes)."""
     p = PatientIdentity.model_validate(rx.patient)
-    invoice = rx.invoices[-1] if include_invoice and rx.invoices else None
+    invoices = sorted(rx.invoices, key=lambda i: (i.created_at, i.id)) if include_invoice else []
     return PrescriptionOut(
         id=rx.id, consultation_id=rx.consultation_id, patient_id=rx.patient_id, patient_name=p.name,
         patient_age=p.age, patient_sex=p.sex, patient_allergies=rx.patient.allergies,
         provider_name=rx.provider.name, organization_name=rx.organization.name,
         organization_type=rx.organization.org_type, pharmacy_name=rx.pharmacy.name if rx.pharmacy else None,
         status=rx.status, created_at=rx.created_at, issued_at=rx.issued_at, sent_at=rx.sent_at,
-        dispensed_at=max((d.dispensed_at for d in rx.dispensings), default=None),
+        dispensed_at=max((d.dispensed_at for d in rx.dispensings
+                          if any(line.get("quantity_dispensed", 0) for line in d.items_dispensed or [])), default=None),
         reason=(rx.consultation.complaint if rx.consultation else None) if include_reason else None,
         notes=rx.notes, status_reason=rx.status_reason,
         items=[PrescriptionItemOut.model_validate(i) for i in rx.items],
-        dispensings=[dispensing_to_out(d) for d in rx.dispensings],
-        invoice=invoice_to_out(invoice) if invoice else None,
+        dispensings=[dispensing_to_out(d, include_internal=pharmacy_view)
+                     for d in sorted(rx.dispensings, key=lambda d: (d.dispensed_at, d.id))],
+        invoice=invoice_to_out(invoices[-1]) if invoices else None,
+        invoices=[invoice_to_out(i) for i in invoices],
+        verified_at=rx.verified_at, verified_by_name=rx.verifier.name if rx.verifier else None,
     )
 
 
@@ -261,12 +271,15 @@ def _query_timeline(session: Session, patient_id: int, decision: AccessDecision,
     return out
 
 
-def _patient_out(patient: Patient, decision: AccessDecision) -> PatientOut:
-    # Allergies are shown with any active consent (safety-critical for prescribing);
-    # diagnoses/conditions only when consultation or hospital records are shared.
+def _patient_out(session: Session, patient: Patient, decision: AccessDecision) -> PatientOut:
+    # Allergies — clinician-documented AND patient-reported (D1) — are shown with any active consent
+    # (safety-critical for prescribing); diagnoses/conditions only when consultation or hospital records are shared.
+    from services.patient_entry_service import reported_allergies  # local import: avoids a cycle
+
     sees_conditions = decision.can(RecordCategory.CONSULTATIONS) or decision.can(RecordCategory.HOSPITAL_RECORDS)
     return PatientOut(id=patient.id, user_id=patient.user_id, name=patient.name, dob=patient.dob, sex=patient.sex,
-                      allergies=patient.allergies, conditions=patient.conditions if sees_conditions else None)
+                      allergies=patient.allergies, conditions=patient.conditions if sees_conditions else None,
+                      reported_allergies=reported_allergies(session, patient.id) if decision.allowed else [])
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +297,7 @@ def get_authorized_record(session: Session, actor: Actor, patient_id: int, view:
     patient = session.get(Patient, patient_id)
     author = (actor.id, actor.organization_id) if decision.via == "consent" else None
     return AuthorizedRecord(
-        patient=_patient_out(patient, decision), access=decision,
+        patient=_patient_out(session, patient, decision), access=decision,
         consultations=_query_consultations(session, patient_id, decision, author),
         notes=_query_notes(session, patient_id, decision, author),
         prescriptions=_query_prescriptions(session, patient_id, decision, author),

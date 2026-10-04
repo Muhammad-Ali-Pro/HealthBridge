@@ -10,7 +10,7 @@ ROLE_CARDS = [
     (Role.PATIENT, "Patient", "person", "teal",
      ["See one timeline across every provider", "Choose who can see which records", "Send prescriptions to a pharmacy"]),
     (Role.DOCTOR, "Doctor", "stethoscope", "blue",
-     ["Find patients and request access", "View only consented records", "Consultations and e-prescriptions"]),
+     ["Find patients by name or HB-ID", "View only consented records", "Consultations and e-prescriptions"]),
     (Role.PHARMACIST, "Pharmacy", "local_pharmacy", "amber",
      ["Receive e-prescriptions", "Verify and dispense", "Simulated billing"]),
     (Role.LAB, "Laboratory", "biotech", "navy",

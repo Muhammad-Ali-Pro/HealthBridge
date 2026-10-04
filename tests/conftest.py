@@ -64,3 +64,14 @@ def pid(seeded):
     from core.models import Patient
 
     return lambda name: seeded.scalar(select(Patient.id).where(Patient.name == name))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def app_database():
+    """The temp DB used by AppTest pages exists and is seeded before any test reads it directly."""
+    from core.db import get_session, init_db
+    from data.seed import seed_if_empty
+
+    init_db()
+    with get_session() as s:
+        seed_if_empty(s)

@@ -13,10 +13,10 @@ from ui.components import (
     page_header,
     patient_entry_html,
     patient_provided_badge_html,
-    phase_action,
     section_header,
 )
 from ui.sections import consultation_card, medications_html, patient_hero
+from ui import patient as patient_actions
 from ui.shell import current_actor
 
 actor = current_actor()
@@ -57,20 +57,21 @@ with right:
                  <span class="hint">{esc(o.lab_name)} · {esc(fmt_date(o.published_at or o.ordered_at))}</span></div>{rows}
                  <div style="font-size:.8rem;color:var(--hb-muted);margin-top:.6rem">Talk to your doctor about what these results mean for you.</div></div>""")
 
-section_header("Information I added", "Clearly marked as patient-provided")
+section_header("Information I added", "Clearly marked as patient-provided — never changes what your doctors recorded")
 with st.container(horizontal=True, gap="small"):
-    phase_action("Add a health note", "edit_note", 5, key="mh_note")
-    phase_action("Add allergy or information", "add_circle", 5, key="mh_info")
+    patient_actions.quick_actions(actor, key="mh", upload=False)
 entries = "".join(patient_entry_html(e) for e in record.patient_entries)
 html(f'<div class="hb-card" style="padding-top:.4rem">{entries}</div>' if entries
      else f'<div class="hb-card">{patient_provided_badge_html()} Nothing added yet.</div>')
 
 section_header("My documents", "Uploaded by you or by your providers")
 with st.container(horizontal=True, gap="small"):
-    phase_action("Upload a document", "upload_file", 5, key="mh_upload")
+    patient_actions.quick_actions(actor, key="mh_docs", entries=False)
+    st.page_link("views/patient/documents.py", label="All documents", icon=":material/folder_open:")
 cols = st.columns(3)
 for i, d in enumerate(record.documents):
     with cols[i % 3]:
         html(f'<div class="hb-card">{document_card_html(d)}</div>')
 if not record.documents:
     empty_state("No documents yet", icon_name="description")
+patient_actions.render_dialogs(actor)

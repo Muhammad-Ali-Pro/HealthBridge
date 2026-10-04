@@ -72,7 +72,7 @@ def test_page_renders_without_error(role, path):
 def test_role_specific_navigation():
     labels = {role: [n.label for n in items] for role, items in NAV.items()}
     assert labels[Role.PATIENT] == ["Home", "My Health", "Medical Timeline", "Prescriptions", "Medications",
-                                    "Lab Reports", "Care Network", "Consent & Access"]
+                                    "Lab Reports", "Documents", "Care Network", "Consent & Access"]
     assert labels[Role.DOCTOR] == ["Dashboard", "Patients", "Consultations", "Prescriptions", "Medical Timeline",
                                    "Reports & Documents", "My Organizations", "AI Insights"]
     assert labels[Role.PHARMACIST] == ["Dashboard", "Prescriptions", "Pending Verification", "Dispensing", "Billing", "Patients"]

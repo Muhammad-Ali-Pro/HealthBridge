@@ -17,7 +17,7 @@ from enum import StrEnum
 from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def utcnow() -> datetime:
@@ -162,6 +162,8 @@ class EventType(StrEnum):
     PRESCRIPTION_CANCELLED = "prescription_cancelled"
     DISPENSING = "dispensing"
     INVOICE_ISSUED = "invoice_issued"
+    PAYMENT_RECORDED = "payment_recorded"
+    INVOICE_CANCELLED = "invoice_cancelled"
     LAB_ORDERED = "lab_ordered"
     LAB_REPORT_PUBLISHED = "lab_report_published"
     DOCUMENT_ADDED = "document_added"
@@ -359,12 +361,15 @@ class Prescription(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)         # prescription date
     issued_at: Mapped[datetime | None] = mapped_column(DateTime)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime)                  # pharmacist verification (D7)
+    verified_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     notes: Mapped[str] = mapped_column(Text, default="")
     status_reason: Mapped[str] = mapped_column(Text, default="")                   # rejection / cancellation reason
 
     consultation: Mapped[Consultation | None] = relationship(back_populates="prescriptions")
     patient: Mapped[Patient] = relationship()
-    provider: Mapped[User] = relationship()
+    provider: Mapped[User] = relationship(foreign_keys=[provider_id])
+    verifier: Mapped[User | None] = relationship(foreign_keys=[verified_by])
     organization: Mapped[Organization] = relationship(foreign_keys=[organization_id])
     pharmacy: Mapped[Organization | None] = relationship(foreign_keys=[pharmacy_id])
     items: Mapped[list["PrescriptionItem"]] = relationship(back_populates="prescription", cascade="all, delete-orphan")
@@ -398,7 +403,10 @@ class Dispensing(Base):
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
     dispensed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     status: Mapped[str] = mapped_column(String(30), default=DispensingStatus.DISPENSED)
-    # [{"drug_name": str, "quantity_prescribed": int, "quantity_dispensed": int}]
+    # One line per prescribed medicine (D6):
+    # [{"item_id": int, "drug_name": str, "quantity_prescribed": int, "quantity_dispensed": int,
+    #   "status": DispensingStatus, "note": str (pharmacy-internal)}]
+    # Dispensing.status is the aggregate of the lines. `notes` and line notes are pharmacy-internal.
     items_dispensed: Mapped[list[dict]] = mapped_column(JSON, default=list)
     substitutions: Mapped[str] = mapped_column(Text, default="")   # substitution REQUEST text; never automatic
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -419,7 +427,7 @@ class Invoice(Base):
     patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"))
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))   # pharmacy
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
-    # [{"description": str, "quantity": int, "unit_price": float, "total": float}]
+    # [{"description": str, "quantity": int, "unit_price": float, "total": float}]  — one invoice per dispensing (D13)
     items: Mapped[list[dict]] = mapped_column(JSON, default=list)
     total: Mapped[float] = mapped_column(default=0.0)
     amount_paid: Mapped[float] = mapped_column(default=0.0)
