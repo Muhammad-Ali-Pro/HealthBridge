@@ -15,3 +15,14 @@ HealthBridge_AI_PRD_v2_Research_Backed.docx
 .env.*
 !.env.example
 *.key
+
+# Local databases, uploads and generated artifacts (demo data is re-seeded from data/seed.py)
+*.db
+*.sqlite
+*.sqlite3
+*.log
+scratchpad/
+shots/
+screenshots/
+.coverage
+htmlcov/

@@ -7,6 +7,15 @@ out of scope. They are specifications, not code.
 > **Implementation order:** Patient workflow first (implement → verify → approve), then Pharmacy.
 > The Doctor workflow (Phase 2) is complete and must not be changed by either.
 
+## Implementation status (updated 4 October 2026)
+
+| Area | Status |
+|---|---|
+| Shared dependencies A1–A3 (source-aware activity recording, new event types, `verified_by`/`verified_at`, schema v7) | **Implemented** (commit `cf30b74`) |
+| Patient workflow (`patient/`) | **Implemented** (commit `cf30b74`) — items labelled TO IMPLEMENT in the patient files were written before implementation and are now built, except where marked FUTURE |
+| A5 — read-only pharmacy status on the doctor's prescription page | Not implemented |
+| Pharmacy workflow (`pharmacy/`) | **Not implemented** beyond the existing read-only pages; the pharmacy files remain the specification for the next phase |
+
 ## Status labels used in every document
 
 | Label | Meaning |

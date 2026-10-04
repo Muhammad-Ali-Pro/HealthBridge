@@ -1,185 +1,246 @@
 # HealthBridge
 
-**One patient. One longitudinal health timeline. Multiple connected healthcare providers.**
+**One patient. One connected health journey.**
 
-HealthBridge connects clinics, hospitals, laboratories and pharmacies around a single patient-owned
-timeline. Patients decide which doctor — at which organization — can see which records, for how long.
-Hackathon MVP: Streamlit + SQLite + SQLAlchemy + Pydantic + LangGraph + Google Gemini (bring your own key).
+HealthBridge is a consent-based connected health record. Clinics, hospitals, laboratories and pharmacies
+contribute to one longitudinal patient timeline, and the patient decides which doctor — at which
+organization — may see which records, for how long. An AI Clinical Copilot summarises only the records a
+doctor is authorized to see and flags possible documentation discrepancies for clinician review.
 
-> **Synthetic data only.** AI organises, summarises and flags *possible* discrepancies.
-> It never diagnoses, makes treatment decisions or changes medication. Agents may only write
-> `AIFlag` and `AISummary` records.
+> **Hackathon MVP · synthetic data only · sign-in is simulated (DEMO MODE).**
+> The AI organises, summarises and flags. It never diagnoses, prescribes or changes treatment.
 
-## Setup
+## 🚀 Hackathon Demo
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-copy .env.example .env          # optional: developer GEMINI_API_KEY (testers can enter their own in the app)
+> **Demo:** Coming soon (Streamlit Community Cloud — see the Deployment section below).
+
+The demo shows a patient (Ahmed Khan), a doctor working at two organizations (Dr. Arif Hassan), a pharmacy
+(HealthPlus Pharmacy) and a laboratory (HealthLab Diagnostics) connected through one consent-controlled
+timeline — and a multi-agent AI copilot that can only see what the patient shared.
+
+## 🎯 Problem
+
+A patient's care is spread across clinics, hospitals, laboratories and pharmacies whose records are not
+connected. Doctors often lack the medication and visit history they need at the point of care, patients end up
+carrying paper and repeating their history, and sharing data safely — with the right person, for the right
+purpose — is hard.
+
+## 💡 Solution
+
+- **One timeline** built from digital events at source (consultations, prescriptions, lab reports, dispensing),
+  each with its provenance (organization, clinician, timestamp, source type).
+- **Patient-controlled consent** — per doctor **and** organization, per record category, time-limited and revocable.
+- **Minimum-necessary access** for pharmacies and laboratories.
+- **A consent-bound AI copilot** for doctors, with every statement linked to a source record.
+
+## ✨ Current Features
+
+### Patient
+- Home dashboard, **My Health**, **Medical Timeline** (filters; every entry shows its source), **Medications**, **Lab Reports**.
+- **Documents** page — provider, laboratory and own documents; upload (PDF/PNG/JPG, 10 MB) and download.
+- **Patient-provided information** — health notes and **patient-reported allergies** (append-only, always labelled
+  *Patient-provided*; they never change the clinician-documented allergy list).
+- **Prescriptions** with plain-language status; **choose a pharmacy** for an issued prescription and send it.
+- **Additional notes** from consultations are visible; **internal clinician notes are never shown**.
+- **Care Network** — every doctor and organization connected to the patient.
+- **Consent & Access** — share selected categories or all records (explicit warning + confirmation), choose a
+  duration (until revoked, one consultation, 24 h, 7 days), see who opened the record, revoke at any time.
+
+### Doctor
+- Dashboard (today's consultations, follow-ups, prescriptions issued, AI review items, recent patients).
+- Patient search (identity only until consent) and a **patient workspace** limited to consented categories.
+- **"Working at" organization switcher** — access is re-checked per organization.
+- Consultations (editable visit time, clinical fields, patient-visible additional notes, internal notes,
+  attachments) and multi-medicine e-prescriptions (allergy warnings, send to a pharmacy).
+
+### AI Clinical Copilot
+- Three agents in a **LangGraph** graph, over consent-filtered records only.
+- **Google Gemini** through a provider abstraction, with **bring-your-own-key** (BYOK).
+- Structured, validated output; every item cites its source records.
+- AI flags with **Accept / Dismiss** and **View source**.
+- Works without a key: a deterministic response clearly labelled *"Demo AI response — live model unavailable"*.
+
+### Pharmacy *(minimum — the full workflow is not implemented yet)*
+- Receives prescriptions sent to it (by the doctor or the patient) in its queue.
+- Read-only dashboard, prescription list, pending-verification view, dispensing log, billing table and patients
+  view — showing only what is needed to dispense (identity, allergies, medicines, prescriber).
+- Verify, reject, dispense, invoice and payment **actions are placeholders** (see the Roadmap section below).
+
+### Laboratory *(read-only demo pages with seeded data; workflow is future)*
+
+## 🤖 AI Architecture
+
+```text
+Doctor
+  ↓  Consent / authorization  — no active consent → no agent runs
+  ↓  Record Retrieval Agent   — receives only the consent-filtered record (no database access)
+  ↓  Clinical Summary Agent   — AIProvider.generate_structured → Pydantic validation
+  ↓  Safety / Consistency Agent — rule-based checks + model checks
+  ↓  Assemble & validate      — citations to unknown records are removed
+  ↓  Doctor review            — Accept / Dismiss / View source
 ```
 
-**Windows Smart App Control note:** if importing SQLAlchemy fails with
-`DLL load failed ... An Application Control policy has blocked this file`, reinstall it as pure Python:
+- **LangGraph** orchestrates the agents (`agents/copilot.py`).
+- **Provider abstraction:** agents depend only on `AIProvider` (`agents/providers.py`);
+  `GeminiProvider` (official `google-genai` SDK) is the implemented provider. Another provider can be added as a
+  subclass without changing the agents, graph, UI or schemas.
+- **Structured output:** JSON-schema responses validated against Pydantic models (`agents/schemas.py`).
+- AI writes only AI summaries and AI flags — never clinical records.
+
+## 🔐 Security & Privacy
+
+- **Consent-based authorization**, scoped to patient + doctor + organization + record categories, enforced
+  **server-side** in the service layer (`services/access_service.py`, `services/record_service.py`) — not by hiding buttons.
+- **AI data boundary:** patient data is filtered by the consent layer *before* the AI graph runs; agents and the
+  Gemini provider never get a database session or unrestricted data. Revocation immediately blocks the AI too.
+- **Role separation:** pharmacies see only prescriptions sent to them and cannot browse the medical record;
+  doctors never see pharmacy billing; patients never see internal clinician notes.
+- **Provenance & audit:** every record keeps its source; consent changes, record access, denials, record
+  creation and AI generation/review are audited (without record content, prompts or keys).
+- **Gemini key:** held only in the user's Streamlit session — never stored in the database, logs or audit
+  entries, never committed. `.env` and Streamlit secrets files are git-ignored.
+- **Demo limitation:** authentication is simulated; this is not production-grade security.
+
+## 🏗️ Architecture
+
+```text
+Streamlit UI                     views/ (pages per role) · ui/ (shell, components, dialogs)
+   ↓
+Service layer                    services/ — business rules, validation, server-side authorization
+   ↓
+Authorization / consent          access_service · record_service (the only read path to a record)
+   ↓
+Domain models → SQLite           core/models.py (SQLAlchemy) · data/healthbridge.db (seeded on first start)
+   ↓ (consent-filtered record)
+LangGraph AI layer               agents/ — retrieval, summary, safety/consistency, assemble
+   ↓
+AIProvider → GeminiProvider      Google Gemini API (bring your own key)
+```
+
+## 📁 Project Structure
+
+```text
+app.py        Streamlit entry point and router
+agents/       LangGraph copilot, agent rules, Pydantic AI schemas, AI provider abstraction (Gemini)
+core/         configuration, database setup, SQLAlchemy models, Pydantic DTOs
+services/     access control, consent, records, clinical, prescriptions, documents, pharmacy, audit, copilot
+ui/           app shell, theme, shared components, patient dialogs, AI settings (BYOK)
+views/        pages for patient, doctor, pharmacy and laboratory
+data/         demo seed script and synthetic drug catalog
+tests/        service, authorization, AI and Streamlit AppTest UI tests
+docs/         workflow specifications (docs/workflows/)
+```
+
+## 🧪 Testing
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pyflakes agents core services ui views tests data app.py
+```
+
+Current status: **182 tests passing** (verified on Python 3.14 locally and on Python 3.12 in a fresh environment).
+Gemini is tested with an offline fake client; no real key is used in tests.
+
+## ⚙️ Local Setup
+
+```powershell
+git clone https://github.com/Muhammad-Ali-Pro/HealthBridge.git
+cd HealthBridge
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+python -m data.seed          # optional — the app also creates and seeds the demo database on first start
+streamlit run app.py         # http://localhost:8501
+```
+
+Python 3.12 or newer. Optional local configuration: `copy .env.example .env` (no key is required).
+
+<details><summary>Windows Smart App Control note</summary>
+
+If importing SQLAlchemy fails with `DLL load failed ... An Application Control policy has blocked this file`,
+reinstall it as pure Python:
 
 ```powershell
 $env:DISABLE_SQLALCHEMY_CEXT = "1"
-.\.venv\Scripts\python.exe -m pip install --force-reinstall --no-deps --no-binary sqlalchemy sqlalchemy
+pip install --force-reinstall --no-deps --no-binary sqlalchemy sqlalchemy
 ```
+</details>
 
-## Run and test
+## 🔑 Gemini API
 
-```powershell
-.\.venv\Scripts\python.exe -m streamlit run app.py      # http://localhost:8501
-.\.venv\Scripts\python.exe -m data.seed                 # reset to the demo data
-.\.venv\Scripts\python.exe -m pytest -q
-```
+- **Optional.** Without a key the copilot runs in a clearly labelled demo/fallback mode.
+- **Bring your own key:** Doctor → patient → **AI Clinical Copilot** → **Configure AI** → paste a key from
+  [Google AI Studio](https://aistudio.google.com/apikey) → **Connect & Test**. The key stays in that browser session;
+  **Clear API Key** removes it.
+- **Models:** default `gemini-3.8-flash`; `gemini-3.5-flash` and `gemini-3.5-flash-lite` are selectable
+  (or set `GEMINI_MODEL`). Google's pricing page listed these on the Gemini API free tier when checked on
+  4 Oct 2026 — check your own limits in AI Studio.
+- Local developers may set `GEMINI_API_KEY` in `.env` (see `.env.example`). **Never commit a key**, and do **not**
+  add a shared Gemini secret to the public Streamlit deployment — every visitor would use it.
+- A successful live Gemini call has not yet been verified with a real key; the integration is covered by offline tests.
 
-The app opens on the **landing page** ("One patient. One connected health journey.") with four demo
-personas: Patient **Ahmed Khan**, Doctor **Dr. Arif** (South City Hospital & Clifton Medical Centre),
-**HealthPlus Pharmacy** and **HealthLab Diagnostics**. Use the profile menu to switch role, the **Working at** selector in the top bar to switch the
-organization a doctor is working at, reset demo data, or exit to the landing page.
+## ☁️ Deployment
 
-The SQLite DB is created and seeded on first load. A DB from an older schema version is rebuilt
-automatically (demo data only — there are no migrations).
+Streamlit Community Cloud: **Create app** → repository `Muhammad-Ali-Pro/HealthBridge` → branch `main` →
+main file `app.py` → **Advanced settings:** Python **3.12**, leave Secrets empty → **Deploy**.
 
-Deep links skip the landing page: `/?as=patient`, `/consent?as=patient`, `/patients?as=doctor`,
-`/billing?as=pharmacist`, `/pending?as=lab`.
+- Dependencies come from `requirements.txt`; theme and navigation settings from `.streamlit/config.toml`.
+- The SQLite demo database is created and seeded automatically. On Community Cloud it is **shared by all
+  visitors and temporary** — it resets when the app restarts. *Reset demo data* (profile menu) resets it for everyone.
+- Open the app shortly before judging; Community Cloud apps sleep after a period without traffic.
 
-**Demo starting point:** Ahmed has *not* yet shared his records with Dr. Arif at South City Hospital —
-grant it live from Consent & Access, then switch to the doctor.
+## 🧭 Demo Workflow
 
-## Doctor workflow (Phase 2)
+### Patient
+1. Landing page → **Continue as Ahmed Khan**.
+2. **My Health** → **Medical Timeline** (sources from several organizations).
+3. **Add a health note** and **Add allergy or information** → both labelled *Patient-provided*.
+4. **Documents** → **Upload a document** → download it.
+5. **Prescriptions** → choose **HealthPlus Pharmacy** for an issued prescription → status *Sent*.
+   (Ask the doctor to issue one first if none is waiting.)
+6. **Consent & Access** → share **Consultations, Prescriptions, Current medications** with
+   *Dr. Arif Hassan — South City Hospital*; later **Revoke access**.
 
-Find patient (name / HB-ID / phone) → consent check for *this doctor at this organization* → patient
-clinical workspace (Overview · Consultations · Prescriptions · Medical Timeline · Reports & Documents ·
-AI Clinical Copilot).
+### Doctor
+1. **Continue as Dr. Arif** (working at South City Hospital) → **Patients** → open Ahmed.
+2. Only the consented categories are visible; patient-reported allergies are labelled.
+3. **AI Clinical Copilot** → optionally **Configure AI** with your Gemini key → **Generate Clinical Summary**
+   (or *Run demo analysis*) → agent stages, *Based on N consented records*, flags → **View source**, **Accept / Dismiss**.
+4. **New consultation** → **Save & create prescription** → issue → send to a pharmacy.
+5. **Working at → Clifton Medical Centre** → Ahmed is *ACCESS RESTRICTED* (organization isolation).
 
-- **Consultations:** editable visit date/time (up to 30 days back), assessment, plan, *Additional notes*,
-  and an optional **internal clinician note**. Internal notes are filtered out in the service layer
-  for the patient (record, timeline, history), not just hidden in the UI. Use **Save & create prescription**
-  to open a prescription already linked to the new consultation.
-- **Prescriptions:** draft → issue (with confirmation) → choose a demo pharmacy → **Send prescription**
-  → status `sent` ("Sent to HealthPlus Pharmacy"). Dispensing and billing happen on the pharmacy side
-  (Phase 3).
-- **Working at** switcher in the top bar (doctors with more than one organization): switching re-checks
-  consent right away. The same patient can be open at one organization and locked at the other.
-- **Dashboard:** KPIs (today's consultations, total patients, pending follow-ups, prescriptions issued,
-  AI review items), today's consultations, recent patients with their access status here, and drafts.
-- **Medical timeline:** filters (All · Consultations · Prescriptions · Labs · Hospital · Pharmacy ·
-  Documents). Only filters for categories the patient shared are offered; the rest are shown as not shared.
+### Pharmacy
+1. **Continue as HealthPlus Pharmacy** → the sent prescription appears under **Pending Verification**, with
+   identity, allergies and medicines only. (Verification, dispensing and billing actions are not implemented yet.)
 
-**HealthBridge Clinical Copilot** (the AI Clinical Copilot tab, or Doctor → AI Insights). Each agent
-has one narrow job:
+Deep links skip the landing page: `/?as=patient`, `/?as=doctor`, `/?as=pharmacist`, `/?as=lab`.
 
-Doctor → consent check → **Record Retrieval Agent** → **Clinical Summary Agent** →
-**Safety / Consistency Agent** → doctor review
+## 🗺️ Roadmap
 
-- **Record Retrieval Agent:** reads only through `record_service.get_authorized_record`; it never
-  queries the database directly.
-- **Clinical Summary Agent:** builds the history, medications, prescriptions, important changes and
-  follow-up. Every item cites a record ID, and unsupported statements are removed.
-- **Safety / Consistency Agent:** flags possible discrepancies (allergy conflicts, duplicate or
-  overlapping prescriptions, missing documentation, date inconsistencies). It never recommends treatment.
+**Completed**
+- Phase 1 — foundation, demo data, consent model, role workspaces.
+- Phase 2 — doctor workflow and multi-agent AI Clinical Copilot (Gemini BYOK).
+- Patient workflow — patient entries, allergies, documents, pharmacy choice, consent management.
 
-The doctor can **Accept** or **Dismiss** each flag, and use **View source** to see the record,
-organization, author and timestamp. Sources are re-read through consent. AI writes only `AISummary` /
-`AIFlag` rows, never clinical records.
+**Next**
+- Full pharmacy workflow — verification/rejection, full and partial dispensing, unavailable medicines,
+  substitution requests (never automatic), invoicing and payments.
+- Read-only pharmacy dispensing status for doctors.
 
-## AI provider — Google Gemini, bring your own key
+**Future**
+- Laboratory workflow, real authentication, production hosting (PostgreSQL), HL7 FHIR integrations, OCR import of paper records.
 
-| | |
-|---|---|
-| Provider | Google Gemini API, via the official `google-genai` SDK (the only AI dependency) |
-| Default model | `gemini-3.8-flash`, configurable. Also offered: `gemini-3.5-flash`, `gemini-3.5-flash-lite` |
-| Why this model | On 2026-10-04, Google's [pricing page](https://ai.google.dev/gemini-api/docs/pricing) listed it as *free of charge* on the Gemini API free tier, and the [models page](https://ai.google.dev/gemini-api/docs/models) listed it as the current stable Flash model. It is fast enough for an interactive demo and supports JSON-schema output. Free-tier rate limits depend on your account; check them in [AI Studio](https://aistudio.google.com/rate-limit). |
-| Structured output | `response_mime_type="application/json"` + `response_json_schema` built from the Pydantic models, then Pydantic validation |
+## ⚠️ Demo Limitations
 
-**Get a key:** go to [Google AI Studio](https://aistudio.google.com/apikey), sign in, and choose
-**Get API key → Create API key**. It is free and needs no billing.
+- Authentication is simulated (persona switching); not production security.
+- SQLite demo persistence; on Streamlit Community Cloud the data is shared and temporary.
+- Live AI needs the user's own Gemini key; the real-key path is not yet verified end to end.
+- The full pharmacy workflow is not implemented yet.
+- Production deployment and security hardening are still required.
 
-**Use it in the demo (BYOK):** go to Doctor → patient → **AI Clinical Copilot** tab (or AI Insights) →
-**Configure AI**. Choose Google Gemini and a model, paste the key, then click **Connect & Test**. One
-small request, with no patient data, checks the key. The panel then shows *✓ AI provider connected ·
-Active model*. **Clear API Key** removes it.
+## 📄 Documentation
 
-**Local developer configuration** (optional) in `.env`. A key entered in the UI takes precedence for that
-browser session. `GEMINI_API_KEY` in `.streamlit/secrets.toml` is also read.
-
-```ini
-AI_PROVIDER=gemini
-GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-3.8-flash
-```
-
-**Key handling:**
-- The key is held only in that browser session's `st.session_state`, in server memory, for one session.
-- It is never written to SQLite, logs, audit entries, patient records or URLs, and never shared with another session.
-- Only its last four characters are ever displayed.
-- Provider errors are reduced to safe messages, so raw responses that could echo request details are never shown.
-- `.env`, `.env.*` and `.streamlit/secrets.toml` are git-ignored.
-
-**No key, quota exhausted, or model unavailable:** HealthBridge keeps working. The Copilot shows
-*AI is not connected* and a **Configure AI** button. You can still run a deterministic analysis. It is
-always labelled **"Demo AI response — live model unavailable"** and is never presented as model output.
-
-**Adding OpenAI later:**
-- Agents depend only on `agents/providers.AIProvider` (`generate_structured`, `test_connection`,
-  `get_model_name`). Only `agents/providers.py` imports a vendor SDK.
-- To add OpenAI, write an `OpenAIProvider(AIProvider)` subclass and register it in `PROVIDERS`.
-- Consent logic, the LangGraph workflow, the agents, the UI and the Pydantic schemas stay unchanged.
-
-## Core model
-
-```
-Patient ──< Consent >── Provider (User) ──< ProviderOrganization >── Organization
-               │                                                    (clinic | hospital |
-               └──< ConsentScope (record category)                   laboratory | pharmacy)
-
-Clinical records: Consultation, ClinicalNote, Prescription(+Items), Dispensing, Invoice,
-LabOrder → LabResult → LabReport, Document, PatientEntry (patient-provided), TimelineEvent.
-Each keeps patient + provider (where applicable) + organization + timestamp + record category
-+ source (patient / provider / organization). Billing is never shareable with doctors.
-```
-
-**Access rules (enforced in `services/access_service.py`, not the UI):**
-
-* Patients always see their own full record.
-* A doctor sees a patient's record only with an active consent for **that doctor at that organization**
-  (not revoked, not expired), and only the consented categories: consultations, prescriptions,
-  current medications, laboratory reports, hospital records, imaging reports.
-* Pharmacies see only prescriptions routed to them (no diagnoses or wider record).
-  Laboratories see only test orders routed to them.
-* Every consent grant/revoke, every consent-based record access, and every denied attempt is audited.
-
-## Demo identities — DEMO MODE, authentication simulated
-
-| Role | User | Organization(s) |
-|---|---|---|
-| Patient | **Ahmed Khan** (+ 6 more) | — |
-| Doctor | **Dr. Ayesha Malik** | Clifton Family Clinic (primary), City Hospital |
-| Doctor | Dr. Imran Qureshi | Gulshan Medical Centre, City Hospital |
-| Doctor | **Dr. Arif Hassan** | South City Hospital (primary), Clifton Medical Centre |
-| Pharmacist | Sana Iqbal / Hamza Sheikh | HealthPlus Pharmacy / CarePoint Pharmacy |
-| Laboratory | Nadia Farooq | HealthLab Diagnostics |
-
-Ahmed's consents: Dr. Ayesha @ Clifton Family Clinic — all records; Dr. Ayesha @ City Hospital and
-Dr. Arif @ Clifton Medical Centre — one consultation (expired); Dr. Imran @ Gulshan — revoked;
-Dr. Arif @ South City Hospital — **none yet** (granted live in the demo).
-
-## Layout
-
-```
-app.py              router + app shell
-ui/landing.py       public front page + demo role selection
-views/patient/      Home, My Health, Medical Timeline, Prescriptions, Medications, Lab Reports,
-                    Care Network, Consent & Access
-views/doctor/       Dashboard, Patients, Consultations, Prescriptions, Medical Timeline,
-                    Reports & Documents, My Organizations, AI Insights
-views/pharmacy/     Dashboard, Prescriptions, Pending Verification, Dispensing, Billing, Patients
-views/lab/          Dashboard, Test Orders, Pending Reports, Published Reports, Patients
-core/               config, db, ORM models, Pydantic schemas
-services/           access control, consent, records, provider/pharmacy/lab views, audit
-data/               seed script, synthetic drug catalog
-ui/                 theme, components, sections, workflows, shell
-tests/
-```
+- Workflow specifications (source of truth for implementation): [`docs/workflows/`](docs/workflows/README.md)
+  — [patient](docs/workflows/patient/) and [pharmacy](docs/workflows/pharmacy/).
+- The product requirements document (PRD v2.1) is maintained outside this repository.
